@@ -3,7 +3,7 @@ use std::path::Path;
 
 use serde::Deserialize;
 use swc_core::{
-    common::DUMMY_SP,
+    common::{plugin::metadata::TransformPluginMetadataContextKind, DUMMY_SP},
     ecma::{
         ast::*,
         visit::{VisitMut, VisitMutWith},
@@ -244,7 +244,8 @@ pub fn process_transform(program: Program, metadata: TransformPluginProgramMetad
         .and_then(|s| serde_json::from_str(&s).ok())
         .unwrap_or_default();
 
-    let mut transform = ReactDataTestIdTransform::new(options);
+    let filename = metadata.get_context(&TransformPluginMetadataContextKind::Filename);
+    let mut transform = ReactDataTestIdTransform::new_with_filename(options, filename);
     let mut program = program;
     program.visit_mut_with(&mut transform);
     program

@@ -1,6 +1,6 @@
 {
   "name": "swc-plugin-react-data-testid",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "SWC plugin to automatically generate data-testid attributes for React components",
   "license": "MIT",
   "repository": "Kazaz-Or/swc-plugin-react-data-testid",
