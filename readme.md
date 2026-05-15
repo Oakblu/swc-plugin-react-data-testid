@@ -1,14 +1,142 @@
-# babel-plugin-react-data-testid-generator
+# react-data-testid plugins
 
-[![npm version](https://img.shields.io/npm/v/babel-plugin-react-data-testid-generator.svg)](https://www.npmjs.com/package/babel-plugin-react-data-testid-generator)
+[![npm version (babel)](https://img.shields.io/npm/v/babel-plugin-react-data-testid-generator.svg?label=babel)](https://www.npmjs.com/package/babel-plugin-react-data-testid-generator)
+[![npm version (swc)](https://img.shields.io/npm/v/swc-plugin-react-data-testid.svg?label=swc)](https://www.npmjs.com/package/swc-plugin-react-data-testid)
 [![npm downloads](https://img.shields.io/npm/dm/babel-plugin-react-data-testid-generator.svg)](https://www.npmjs.com/package/babel-plugin-react-data-testid-generator)
 [![Build Status](https://github.com/Kazaz-Or/babel-plugin-react-data-testid-generator/workflows/🔍%20PR%20Validations/badge.svg)](https://github.com/Kazaz-Or/babel-plugin-react-data-testid-generator/actions)
 [![Coverage](https://img.shields.io/badge/coverage-96%25-brightgreen.svg)](https://github.com/Kazaz-Or/babel-plugin-react-data-testid-generator)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-> 🧪 **Enhanced Babel plugin for automatic React data-testid generation with unique IDs and comprehensive component support**
+> 🧪 **Automatic React data-testid generation with unique IDs — available for both Babel and SWC**
 
 Automatically adds `data-testid` attributes to your React components during the build process, making it easier to write reliable end-to-end tests. Features **component-scoped unique counters** for predictable, collision-free test IDs.
+
+**Choose your compiler:** [Babel Plugin](#-babel-plugin) · [SWC Plugin](#-swc-plugin)
+
+---
+
+## ⚡ SWC Plugin
+
+> Use this if your project uses SWC (Next.js 12+, `@vitejs/plugin-react-swc`, `@swc/jest`).
+
+### Installation
+
+```bash
+npm install --save-dev swc-plugin-react-data-testid
+# or
+yarn add -D swc-plugin-react-data-testid
+```
+
+### Basic Setup
+
+Add the plugin to your `.swcrc`:
+
+```json
+{
+  "jsc": {
+    "experimental": {
+      "plugins": [["swc-plugin-react-data-testid", {}]]
+    }
+  }
+}
+```
+
+### Framework-Specific Setup
+
+<details>
+<summary><strong>🚀 Next.js (SWC)</strong></summary>
+
+Configure in `next.config.js`:
+
+```js
+/** @type {import('next').NextConfig} */
+const nextConfig = {
+  experimental: {
+    swcPlugins: [
+      ['swc-plugin-react-data-testid', {}]
+    ]
+  }
+}
+
+module.exports = nextConfig
+```
+
+</details>
+
+<details>
+<summary><strong>⚡ Vite with @vitejs/plugin-react-swc</strong></summary>
+
+Configure in `vite.config.js`:
+
+```js
+import { defineConfig } from 'vite'
+import react from '@vitejs/plugin-react-swc'
+
+export default defineConfig({
+  plugins: [
+    react({
+      plugins: [['swc-plugin-react-data-testid', {}]]
+    })
+  ]
+})
+```
+
+</details>
+
+<details>
+<summary><strong>🧪 @swc/jest</strong></summary>
+
+Configure in `jest.config.js`:
+
+```js
+module.exports = {
+  transform: {
+    '^.+\\.[jt]sx?$': ['@swc/jest', {
+      jsc: {
+        experimental: {
+          plugins: [['swc-plugin-react-data-testid', {}]]
+        }
+      }
+    }]
+  }
+}
+```
+
+</details>
+
+### With Custom Attributes
+
+```json
+{
+  "jsc": {
+    "experimental": {
+      "plugins": [
+        ["swc-plugin-react-data-testid", { "attributes": ["data-testid", "data-cy"] }]
+      ]
+    }
+  }
+}
+```
+
+### ⚠️ SWC Version Compatibility
+
+SWC plugins are compiled against a specific `swc_core` version and **must match** what your consumer uses. This plugin targets `swc_core 65.x`. Each SWC minor release may require a new plugin version.
+
+Check compatibility before pinning a version: [plugins.swc.rs](https://plugins.swc.rs/)
+
+---
+
+## 🔵 Babel Plugin
+
+> Use this if your project uses Babel (CRA, older Next.js, custom Babel config).
+
+### Installation
+
+```bash
+npm install --save-dev babel-plugin-react-data-testid-generator
+# or
+yarn add --dev babel-plugin-react-data-testid-generator
+```
 
 ## ✨ Features
 
@@ -22,14 +150,6 @@ Automatically adds `data-testid` attributes to your React components during the 
 - 🌐 **Framework agnostic** - works with Next.js, Vite, CRA, and more
 - 🔄 **JSX member expressions** support (`Modal.Header` → `ComponentName.Header`)
 - 🛡️ **Never overrides existing attributes**
-
-## 🚀 Installation
-
-```bash
-npm install --save-dev babel-plugin-react-data-testid-generator
-# or
-yarn add --dev babel-plugin-react-data-testid-generator
-```
 
 ## 📖 Usage
 

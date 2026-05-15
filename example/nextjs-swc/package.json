@@ -1,0 +1,23 @@
+{
+  "name": "swc-plugin-react-data-testid-nextjs-example",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "next lint",
+    "serve": "npm run build && npm start",
+    "clean": "rm -rf .next"
+  },
+  "dependencies": {
+    "next": "16.2.6",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0"
+  },
+  "devDependencies": {
+    "eslint": "^9.0.0",
+    "eslint-config-next": "16.2.6",
+    "swc-plugin-react-data-testid": "file:../../swc-plugin-react-data-testid"
+  }
+}

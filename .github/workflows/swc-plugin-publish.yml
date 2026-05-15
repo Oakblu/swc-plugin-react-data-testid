@@ -1,0 +1,264 @@
+name: 📦 Publish SWC Plugin to NPM
+
+on:
+  workflow_dispatch:
+    inputs:
+      version_type:
+        description: "Version bump type"
+        required: true
+        default: "patch"
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
+          - prerelease
+      dry_run:
+        description: "Dry run (test without publishing)"
+        required: false
+        default: false
+        type: boolean
+
+jobs:
+  publish:
+    name: 📦 Build & Publish SWC Plugin
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/master' && github.actor == 'Kazaz-Or'
+    defaults:
+      run:
+        working-directory: swc-plugin-react-data-testid
+
+    steps:
+      - name: 🔒 Verify Release Authorization
+        run: |
+          AUTHORIZED_USER="Kazaz-Or"
+
+          echo "🔍 Authorization Check:"
+          echo "  - Authorized user: $AUTHORIZED_USER"
+          echo "  - Current user: ${{ github.actor }}"
+          echo "  - Current branch: ${{ github.ref_name }}"
+
+          if [[ "${{ github.actor }}" != "$AUTHORIZED_USER" ]]; then
+            echo ""
+            echo "❌ UNAUTHORIZED ACCESS ATTEMPT!"
+            echo "Only $AUTHORIZED_USER is authorized to publish releases."
+            echo "Current user: ${{ github.actor }}"
+            echo ""
+            echo "🚨 This incident has been logged."
+            exit 1
+          fi
+
+          if [[ "${{ github.ref_name }}" != "master" ]]; then
+            echo ""
+            echo "❌ ERROR: Releases must be from master branch!"
+            echo "Current branch: ${{ github.ref_name }}"
+            exit 1
+          fi
+
+          echo ""
+          echo "✅ User authorized: ${{ github.actor }}"
+          echo "✅ Branch verified: master"
+          echo "🚀 Proceeding with secure publish..."
+
+      - name: 📂 Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: 🦀 Setup Rust (stable + wasm32-wasip1)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-wasip1
+
+      - name: 📦 Cache Rust Dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: swc-plugin-react-data-testid
+
+      - name: 🧪 Run Tests
+        run: cargo test
+
+      - name: 🔨 Build WASM
+        run: cargo build --target wasm32-wasip1 --release
+
+      - name: 📋 Copy WASM to Package Root
+        run: cp target/wasm32-wasip1/release/swc_plugin_react_data_testid.wasm plugin.wasm
+
+      - name: 🏗️ Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22.16.0"
+          registry-url: "https://registry.npmjs.org"
+
+      - name: 🔍 Get Current Version
+        id: current_version
+        run: |
+          CURRENT_VERSION=$(node -p "require('./package.json').version")
+          echo "current=$CURRENT_VERSION" >> $GITHUB_OUTPUT
+          echo "📍 Current version: $CURRENT_VERSION"
+
+      - name: 🔢 Bump Version
+        id: version_bump
+        run: |
+          if [[ "${{ inputs.version_type }}" == "prerelease" ]]; then
+            NEW_VERSION=$(npm version prerelease --preid=beta --no-git-tag-version)
+          else
+            NEW_VERSION=$(npm version ${{ inputs.version_type }} --no-git-tag-version)
+          fi
+
+          # Remove 'v' prefix that npm version adds
+          NEW_VERSION=${NEW_VERSION#v}
+
+          echo "new=$NEW_VERSION" >> $GITHUB_OUTPUT
+          echo "🚀 New version: $NEW_VERSION"
+
+      - name: 🔍 Verify Build
+        run: |
+          echo "📋 Package contents:"
+          ls -la plugin.wasm
+
+          echo "📄 Package.json version:"
+          node -p "require('./package.json').version"
+
+          echo "🔍 WASM file info:"
+          file plugin.wasm
+
+      - name: 🧹 Dry Run Check
+        if: ${{ inputs.dry_run }}
+        run: |
+          echo "🧪 DRY RUN MODE - No publishing will occur"
+          echo "📦 Would publish version: ${{ steps.version_bump.outputs.new }}"
+          npm pack --dry-run
+
+      - name: 📦 Publish to NPM
+        if: ${{ !inputs.dry_run }}
+        run: |
+          echo "🚀 Publishing version ${{ steps.version_bump.outputs.new }} to NPM..."
+          npm publish --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: 🏷️ Create Git Tag
+        if: ${{ !inputs.dry_run }}
+        run: |
+          git config --local user.email "action@github.com"
+          git config --local user.name "GitHub Action"
+
+          TAG="swc-v${{ steps.version_bump.outputs.new }}"
+
+          # Check if tag already exists and fail if it does
+          if git rev-parse "$TAG" >/dev/null 2>&1; then
+            echo "❌ ERROR: Tag $TAG already exists!"
+            echo "Please choose a different version or delete the existing tag manually if needed."
+            echo "Existing tags: $(git tag -l)"
+            exit 1
+          fi
+
+          git tag -a "$TAG" -m "Release $TAG"
+          git push origin "$TAG"
+
+          echo "✅ Git tag $TAG created and pushed"
+          echo "📋 Note: Version bump was not committed to master due to branch protection"
+        working-directory: ${{ github.workspace }}
+
+      - name: 📝 Create Version Bump PR
+        if: ${{ !inputs.dry_run }}
+        uses: peter-evans/create-pull-request@v5
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          commit-message: "chore: bump swc-plugin version to ${{ steps.version_bump.outputs.new }}"
+          title: "🔄 SWC Plugin version bump to v${{ steps.version_bump.outputs.new }}"
+          body: |
+            ## 🔄 Automated Version Bump
+
+            This PR was automatically created after publishing SWC plugin v${{ steps.version_bump.outputs.new }}.
+
+            **Changes:**
+            - Updated `swc-plugin-react-data-testid/package.json` version: ${{ steps.current_version.outputs.current }} → ${{ steps.version_bump.outputs.new }}
+
+            **Already Published:**
+            - ✅ NPM: `swc-plugin-react-data-testid@${{ steps.version_bump.outputs.new }}`
+            - ✅ Git Tag: `swc-v${{ steps.version_bump.outputs.new }}`
+            - ✅ GitHub Release: `swc-v${{ steps.version_bump.outputs.new }}`
+
+            **Action Required:** Merge this PR to sync the repository version.
+
+            ---
+            *This PR was automatically created by the SWC plugin publish workflow*
+          branch: version-bump/swc-v${{ steps.version_bump.outputs.new }}
+          delete-branch: true
+          include-untracked: false
+          add-paths: swc-plugin-react-data-testid/package.json
+
+      - name: 🎉 Create GitHub Release
+        if: ${{ !inputs.dry_run }}
+        uses: actions/create-release@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: "swc-v${{ steps.version_bump.outputs.new }}"
+          release_name: "SWC Plugin Release v${{ steps.version_bump.outputs.new }}"
+          body: |
+            ## 🎉 swc-plugin-react-data-testid v${{ steps.version_bump.outputs.new }}
+
+            ### 📦 Installation
+            ```bash
+            npm install --save-dev swc-plugin-react-data-testid@${{ steps.version_bump.outputs.new }}
+            # or
+            yarn add -D swc-plugin-react-data-testid@${{ steps.version_bump.outputs.new }}
+            ```
+
+            ### ⚙️ Usage
+            ```json
+            {
+              "jsc": {
+                "experimental": {
+                  "plugins": [["swc-plugin-react-data-testid", {}]]
+                }
+              }
+            }
+            ```
+
+            ### 🔄 Changes
+            - Version bump from ${{ steps.current_version.outputs.current }} → ${{ steps.version_bump.outputs.new }}
+            - All fixture tests passing ✅
+            - WASM built and published successfully 🚀
+
+            ### 📊 Package Stats
+            - **NPM**: https://www.npmjs.com/package/swc-plugin-react-data-testid
+
+            ---
+            **Full Changelog**: https://github.com/${{ github.repository }}/compare/swc-v${{ steps.current_version.outputs.current }}...swc-v${{ steps.version_bump.outputs.new }}
+          draft: false
+          prerelease: ${{ inputs.version_type == 'prerelease' }}
+
+      - name: 📋 Summary
+        run: |
+          echo "## 🎉 SWC Plugin Publish Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          if [[ "${{ inputs.dry_run }}" == "true" ]]; then
+            echo "### 🧪 Dry Run Completed" >> $GITHUB_STEP_SUMMARY
+            echo "- ✅ Tests passed" >> $GITHUB_STEP_SUMMARY
+            echo "- ✅ WASM built successfully" >> $GITHUB_STEP_SUMMARY
+            echo "- 📦 Would publish: **v${{ steps.version_bump.outputs.new }}**" >> $GITHUB_STEP_SUMMARY
+            echo "- 🔄 Version bump: ${{ steps.current_version.outputs.current }} → ${{ steps.version_bump.outputs.new }}" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "> **Note**: This was a dry run. No actual publishing occurred." >> $GITHUB_STEP_SUMMARY
+          else
+            echo "### 🚀 Successfully Published!" >> $GITHUB_STEP_SUMMARY
+            echo "- ✅ Published to NPM: **v${{ steps.version_bump.outputs.new }}**" >> $GITHUB_STEP_SUMMARY
+            echo "- 🏷️ Git tag created: **swc-v${{ steps.version_bump.outputs.new }}**" >> $GITHUB_STEP_SUMMARY
+            echo "- 📝 GitHub release created" >> $GITHUB_STEP_SUMMARY
+            echo "- 🔄 Version bump: ${{ steps.current_version.outputs.current }} → ${{ steps.version_bump.outputs.new }}" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "### 📦 Installation" >> $GITHUB_STEP_SUMMARY
+            echo '```bash' >> $GITHUB_STEP_SUMMARY
+            echo "npm install --save-dev swc-plugin-react-data-testid@${{ steps.version_bump.outputs.new }}" >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "### 🔗 Links" >> $GITHUB_STEP_SUMMARY
+            echo "- [NPM Package](https://www.npmjs.com/package/swc-plugin-react-data-testid)" >> $GITHUB_STEP_SUMMARY
+            echo "- [GitHub Release](https://github.com/${{ github.repository }}/releases/tag/swc-v${{ steps.version_bump.outputs.new }})" >> $GITHUB_STEP_SUMMARY
+          fi

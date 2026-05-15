@@ -1,0 +1,30 @@
+{
+  "name": "swc-plugin-react-data-testid",
+  "version": "0.1.0",
+  "description": "SWC plugin to automatically generate data-testid attributes for React components",
+  "license": "MIT",
+  "repository": "Kazaz-Or/swc-plugin-react-data-testid",
+  "author": "Or Kazaz <kazazor@gmail.com>",
+  "main": "plugin.wasm",
+  "files": [
+    "plugin.wasm"
+  ],
+  "keywords": [
+    "swc",
+    "swc-plugin",
+    "react",
+    "data-testid",
+    "data-test",
+    "testing",
+    "automation",
+    "unique-ids"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "build": "cargo build --target wasm32-wasip1 --release && cp target/wasm32-wasip1/release/swc_plugin_react_data_testid.wasm plugin.wasm",
+    "test": "cargo test",
+    "test:update": "UPDATE=1 cargo test"
+  }
+}
