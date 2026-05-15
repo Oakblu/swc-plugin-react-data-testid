@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::path::Path;
 
 use serde::Deserialize;
 use swc_core::{
@@ -11,6 +12,21 @@ use swc_core::{
 };
 
 const DEFAULT_ATTRIBUTE: &str = "data-testid";
+
+// Derives a PascalCase component name from a file path.
+// Returns None for paths with no extension, multi-dot base names (e.g. "index.test"),
+// or empty base names.
+fn component_name_from_filename(filename: &str) -> Option<String> {
+    let path = Path::new(filename);
+    path.extension()?.to_str()?; // require a file extension
+    let stem = path.file_stem()?.to_str()?;
+    // Reject "index.test", "foo.spec", etc.
+    if stem.contains('.') || stem.is_empty() {
+        return None;
+    }
+    let mut chars = stem.chars();
+    Some(chars.next()?.to_uppercase().collect::<String>() + chars.as_str())
+}
 
 #[derive(Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -26,15 +42,24 @@ pub struct ReactDataTestIdTransform {
     // Tracks the enclosing named class declaration so visit_mut_class_method
     // can activate current_component only for the render() method.
     current_class: Option<String>,
+    // Fallback name for anonymous default exports, derived from the source filename.
+    filename_component_name: Option<String>,
 }
 
 impl ReactDataTestIdTransform {
     pub fn new(options: PluginOptions) -> Self {
+        Self::new_with_filename(options, None)
+    }
+
+    pub fn new_with_filename(options: PluginOptions, filename: Option<String>) -> Self {
         Self {
             options,
             component_counters: HashMap::new(),
             current_component: None,
             current_class: None,
+            filename_component_name: filename
+                .as_deref()
+                .and_then(component_name_from_filename),
         }
     }
 
@@ -169,6 +194,38 @@ impl VisitMut for ReactDataTestIdTransform {
                     self.current_component = prev;
                     return;
                 }
+            }
+        }
+        n.visit_mut_children_with(self);
+    }
+
+    // export default () => { ... }
+    fn visit_mut_export_default_expr(&mut self, n: &mut ExportDefaultExpr) {
+        if matches!(n.expr.as_ref(), Expr::Arrow(_) | Expr::Fn(_)) {
+            if let Some(name) = self.filename_component_name.clone() {
+                let prev = self.enter_component(name);
+                n.visit_mut_children_with(self);
+                self.current_component = prev;
+                return;
+            }
+        }
+        n.visit_mut_children_with(self);
+    }
+
+    // export default function() { ... }
+    // export default function Named() { ... }
+    fn visit_mut_export_default_decl(&mut self, n: &mut ExportDefaultDecl) {
+        if let DefaultDecl::Fn(fn_expr) = &n.decl {
+            let name = fn_expr
+                .ident
+                .as_ref()
+                .map(|id| id.sym.to_string())
+                .or_else(|| self.filename_component_name.clone());
+            if let Some(name) = name {
+                let prev = self.enter_component(name);
+                n.visit_mut_children_with(self);
+                self.current_component = prev;
+                return;
             }
         }
         n.visit_mut_children_with(self);

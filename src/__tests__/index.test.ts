@@ -114,7 +114,7 @@ pluginTester({
       `,
     },
     {
-      title: "should skip components without identifiable names",
+      title: "should skip components without identifiable names and no filename",
       code: `
         export default () => {
           return <div><button>Click</button></div>;
@@ -128,6 +128,63 @@ pluginTester({
             </div>
           );
         };
+      `,
+    },
+    {
+      title: "should use filename for anonymous default export arrow function",
+      babelOptions: { filename: "/src/pages/about.tsx", parserOpts: { plugins: ["jsx"] } },
+      code: `
+        export default () => {
+          return <div><button>Click</button></div>;
+        };
+      `,
+      output: `
+        export default () => {
+          return (
+            <div data-testid="About.div">
+              <button data-testid="About.button">Click</button>
+            </div>
+          );
+        };
+      `,
+    },
+    {
+      title: "should use filename for anonymous default export function declaration",
+      babelOptions: { filename: "/app/pages/contact.jsx", parserOpts: { plugins: ["jsx"] } },
+      code: `
+        export default function() {
+          return <div><h1>Contact</h1><form><input /></form></div>;
+        }
+      `,
+      output: `
+        export default function () {
+          return (
+            <div data-testid="Contact.div">
+              <h1 data-testid="Contact.h1">Contact</h1>
+              <form data-testid="Contact.form">
+                <input data-testid="Contact.input" />
+              </form>
+            </div>
+          );
+        }
+      `,
+    },
+    {
+      title: "should prefer explicit function name over filename",
+      babelOptions: { filename: "/src/pages/about.tsx", parserOpts: { plugins: ["jsx"] } },
+      code: `
+        export default function AboutPage() {
+          return <div><h1>About</h1></div>;
+        }
+      `,
+      output: `
+        export default function AboutPage() {
+          return (
+            <div data-testid="AboutPage.div">
+              <h1 data-testid="AboutPage.h1">About</h1>
+            </div>
+          );
+        }
       `,
     },
     {

@@ -25,6 +25,10 @@
   "scripts": {
     "build": "cargo build --target wasm32-wasip1 --release && cp target/wasm32-wasip1/release/swc_plugin_react_data_testid.wasm plugin.wasm",
     "test": "cargo test",
-    "test:update": "UPDATE=1 cargo test"
+    "test:update": "UPDATE=1 cargo test",
+    "prepublishOnly": "cargo test && npm run build",
+    "release": "scripts/release.sh",
+    "release:minor": "scripts/release.sh minor",
+    "release:major": "scripts/release.sh major"
   }
 }

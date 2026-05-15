@@ -1,5 +1,6 @@
+import { basename, extname } from "path";
 import * as t from "@babel/types";
-import { NodePath, PluginObj } from "@babel/core";
+import { NodePath, PluginObj, PluginPass } from "@babel/core";
 
 const DEFAULT_DATA_TESTID = "data-testid";
 
@@ -7,9 +8,9 @@ interface PluginOptions {
   attributes?: string[];
 }
 
-interface PluginState {
+type PluginState = PluginPass & {
   opts?: PluginOptions;
-}
+};
 
 const componentCounters = new Map<string, Map<string, number>>();
 
@@ -79,7 +80,17 @@ function addDataTestIds(
   }
 }
 
-function getComponentName(path: NodePath): string | null {
+function componentNameFromFilename(filename: string | undefined | null): string | null {
+  if (!filename) return null;
+  const ext = extname(filename);
+  if (!ext) return null;
+  const name = basename(filename, ext);
+  // Reject multi-dot names like "index.test" or "foo.spec"
+  if (!name || name.includes(".")) return null;
+  return name.charAt(0).toUpperCase() + name.slice(1);
+}
+
+function getComponentName(path: NodePath, filename?: string | null): string | null {
   const node = path.node;
 
   if (t.isFunctionDeclaration(node) && node.id && t.isIdentifier(node.id)) {
@@ -95,6 +106,12 @@ function getComponentName(path: NodePath): string | null {
     ) {
       return parent.node.id.name;
     }
+  }
+
+  // Anonymous default export: derive name from filename
+  const parent = path.parentPath;
+  if (parent && parent.isExportDefaultDeclaration()) {
+    return componentNameFromFilename(filename);
   }
 
   return null;
@@ -122,7 +139,7 @@ export default function (): PluginObj<PluginState> {
         path: NodePath<t.FunctionDeclaration>,
         state: PluginState
       ) {
-        const componentName = getComponentName(path);
+        const componentName = getComponentName(path, state.filename);
         if (!componentName) return;
 
         const attributes = state.opts?.attributes ?? [DEFAULT_DATA_TESTID];
@@ -133,7 +150,7 @@ export default function (): PluginObj<PluginState> {
         path: NodePath<t.FunctionExpression>,
         state: PluginState
       ) {
-        const componentName = getComponentName(path);
+        const componentName = getComponentName(path, state.filename);
         if (!componentName) return;
 
         const attributes = state.opts?.attributes ?? [DEFAULT_DATA_TESTID];
@@ -144,7 +161,7 @@ export default function (): PluginObj<PluginState> {
         path: NodePath<t.ArrowFunctionExpression>,
         state: PluginState
       ) {
-        const componentName = getComponentName(path);
+        const componentName = getComponentName(path, state.filename);
         if (!componentName) return;
 
         const attributes = state.opts?.attributes ?? [DEFAULT_DATA_TESTID];

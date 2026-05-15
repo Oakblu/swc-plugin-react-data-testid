@@ -88,3 +88,28 @@ fn fixture_multi_attrs(input: PathBuf) {
         Default::default(),
     );
 }
+
+// Reads filename.txt from the fixture directory and passes it to the transform
+// so we can test the filename-based fallback for anonymous default exports.
+#[testing::fixture("tests/fixture-filename/*/input.tsx")]
+fn fixture_with_filename(input: PathBuf) {
+    let output = input.with_file_name("output.tsx");
+    let filename = std::fs::read_to_string(input.with_file_name("filename.txt"))
+        .ok()
+        .map(|s| s.trim().to_string());
+    test_fixture(
+        Syntax::Typescript(TsSyntax {
+            tsx: true,
+            ..Default::default()
+        }),
+        &|_| {
+            visit_mut_pass(ReactDataTestIdTransform::new_with_filename(
+                PluginOptions::default(),
+                filename.clone(),
+            ))
+        },
+        &input,
+        &output,
+        Default::default(),
+    );
+}
