@@ -1,4 +1,4 @@
-# react-data-testid plugins
+# react-data-testid plugins (swc-plugin-react-data-testid)
 
 [![npm version (babel)](https://img.shields.io/npm/v/babel-plugin-react-data-testid-generator.svg?label=babel)](https://www.npmjs.com/package/babel-plugin-react-data-testid-generator)
 [![npm version (swc)](https://img.shields.io/npm/v/swc-plugin-react-data-testid.svg?label=swc)](https://www.npmjs.com/package/swc-plugin-react-data-testid)
