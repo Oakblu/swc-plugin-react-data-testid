@@ -1,7 +1,15 @@
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+}
+
 .app {
   min-height: 100vh;
   background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
 }
 
 .container {
@@ -174,7 +182,8 @@
   font-style: italic;
 }
 
-.reset-btn, .modal-btn {
+.reset-btn,
+.modal-btn {
   background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
   color: white;
   border: none;
@@ -185,7 +194,8 @@
   transition: all 0.3s ease;
 }
 
-.reset-btn:hover, .modal-btn:hover {
+.reset-btn:hover,
+.modal-btn:hover {
   transform: translateY(-2px);
   box-shadow: 0 10px 20px rgba(0, 0, 0, 0.2);
 }
@@ -232,21 +242,21 @@ code {
   .hero-title {
     font-size: 2rem;
   }
-  
+
   .container {
     padding: 15px;
   }
-  
+
   .hero {
     padding: 40px 0;
   }
-  
+
   .hero-content {
     padding: 30px 20px;
   }
-  
+
   .highlight-card {
     flex-direction: column;
     text-align: center;
   }
-} 
+}

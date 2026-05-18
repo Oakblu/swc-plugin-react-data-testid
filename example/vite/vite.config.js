@@ -1,24 +1,12 @@
 import { defineConfig } from 'vite'
-import react from '@vitejs/plugin-react'
+import react from '@vitejs/plugin-react-swc'
 
 export default defineConfig({
   plugins: [
     react({
-      babel: {
-        plugins: [
-          ['babel-plugin-react-data-testid-generator', {
-            attributes: ['data-testid']
-          }]
-        ]
-      }
+      plugins: [
+        ['swc-plugin-react-data-testid', {}]
+      ]
     })
-  ],
-  server: {
-    port: 3001,
-    open: true
-  },
-  build: {
-    outDir: 'dist',
-    sourcemap: true
-  }
-}) 
+  ]
+})

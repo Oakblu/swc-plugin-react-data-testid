@@ -3,11 +3,9 @@ name: 🦀 SWC Plugin CI
 on:
   pull_request:
     branches: [master]
-    paths: ['swc-plugin-react-data-testid/**']
     types: [opened, synchronize, reopened, ready_for_review]
   push:
     branches: [master]
-    paths: ['swc-plugin-react-data-testid/**']
     tags: ['swc-v*']
 
 concurrency:
@@ -42,9 +40,6 @@ jobs:
         github.event_name == 'push' ||
         needs.check-ready.outputs.ready == 'true'
       )
-    defaults:
-      run:
-        working-directory: swc-plugin-react-data-testid
 
     steps:
       - name: 📂 Checkout Repository
@@ -55,8 +50,6 @@ jobs:
 
       - name: 📦 Cache Rust Dependencies
         uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: swc-plugin-react-data-testid
 
       - name: 🧪 Run Tests
         run: cargo test
@@ -67,9 +60,6 @@ jobs:
     needs: [test]
     # Only build on push to master or on tag push — not on every PR
     if: github.event_name == 'push'
-    defaults:
-      run:
-        working-directory: swc-plugin-react-data-testid
 
     steps:
       - name: 📂 Checkout Repository
@@ -82,8 +72,6 @@ jobs:
 
       - name: 📦 Cache Rust Dependencies
         uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: swc-plugin-react-data-testid
 
       - name: 🔨 Build WASM
         run: cargo build --target wasm32-wasip1 --release
@@ -92,7 +80,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: swc-plugin-wasm-${{ github.sha }}
-          path: swc-plugin-react-data-testid/target/wasm32-wasip1/release/swc_plugin_react_data_testid.wasm
+          path: target/wasm32-wasip1/release/swc_plugin_react_data_testid.wasm
           retention-days: 7
 
   summary:

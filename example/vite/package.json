@@ -1,23 +1,20 @@
 {
-  "name": "babel-plugin-react-data-testid-generator-vite-example",
+  "name": "swc-plugin-react-data-testid-vite-example",
   "version": "1.0.0",
   "private": true,
-  "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "serve": "npm run build && npm run preview"
+    "clean": "rm -rf dist"
   },
   "dependencies": {
     "react": "^18.2.0",
     "react-dom": "^18.2.0"
   },
   "devDependencies": {
-    "@types/react": "^18.2.0",
-    "@types/react-dom": "^18.2.0",
-    "@vitejs/plugin-react": "^4.0.0",
-    "babel-plugin-react-data-testid-generator": "file:../../",
-    "vite": "^4.4.0"
+    "@vitejs/plugin-react-swc": "^3.8.0",
+    "vite": "^6.0.0",
+    "swc-plugin-react-data-testid": "file:../.."
   }
-} 
+}

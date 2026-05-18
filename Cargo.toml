@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 description = "SWC plugin to automatically generate data-testid attributes for React components"
 license = "MIT"
-repository = "https://github.com/Kazaz-Or/swc-plugin-react-data-testid"
+repository = "https://github.com/Oakblu/plugin-react-data-testid-generator"
 
 [lib]
 # rlib enables cargo test to link the library natively; cdylib is the WASM plugin output.

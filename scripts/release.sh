@@ -4,7 +4,7 @@ set -euo pipefail
 # Usage: ./scripts/release.sh [patch|minor|major]  (default: patch)
 #        ./scripts/release.sh --dry-run [patch|minor|major]
 #
-# Must be run from the swc-plugin-react-data-testid/ directory.
+# Must be run from the repository root.
 
 BUMP="patch"
 DRY_RUN=false
