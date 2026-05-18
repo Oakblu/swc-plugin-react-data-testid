@@ -7,8 +7,12 @@
   "author": "pablohpsilva <pablohpsilva@proton.me>",
   "main": "plugin.wasm",
   "files": [
-    "plugin.wasm"
+    "plugin.wasm",
+    "scripts/merge-manifest.mjs"
   ],
+  "bin": {
+    "testid-merge-manifest": "scripts/merge-manifest.mjs"
+  },
   "keywords": [
     "swc",
     "swc-plugin",

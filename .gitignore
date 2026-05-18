@@ -9,3 +9,4 @@ example/vitest/.swc
 example/vitest/node_modules
 example/jest/.swc
 example/jest/node_modules
+node_modules

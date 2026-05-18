@@ -38,6 +38,7 @@ fn fixture_with_options(input: PathBuf) {
         &|_| {
             visit_mut_pass(ReactDataTestIdTransform::new(PluginOptions {
                 attributes: Some(vec!["data-testid".into(), "data-cy".into()]),
+                manifest_dir: None,
             }))
         },
         &input,
@@ -57,6 +58,7 @@ fn fixture_playwright(input: PathBuf) {
         &|_| {
             visit_mut_pass(ReactDataTestIdTransform::new(PluginOptions {
                 attributes: Some(vec!["data-test-id".into()]),
+                manifest_dir: None,
             }))
         },
         &input,
@@ -81,6 +83,7 @@ fn fixture_multi_attrs(input: PathBuf) {
                     "data-test-id".into(),
                     "data-pw".into(),
                 ]),
+                manifest_dir: None,
             }))
         },
         &input,
@@ -101,6 +104,7 @@ fn fixture_empty_attrs(input: PathBuf) {
         &|_| {
             visit_mut_pass(ReactDataTestIdTransform::new(PluginOptions {
                 attributes: Some(vec![]),
+                manifest_dir: None,
             }))
         },
         &input,

@@ -32,6 +32,10 @@ fn component_name_from_filename(filename: &str) -> Option<String> {
 #[serde(rename_all = "camelCase")]
 pub struct PluginOptions {
     pub attributes: Option<Vec<String>>,
+    // Directory where per-file manifest JSON files are written during transform.
+    // Each file produces one JSON: { "file": "...", "testids": [...] }
+    // Merge with: node scripts/merge-manifest.mjs <manifestDir> <output.json>
+    pub manifest_dir: Option<String>,
 }
 
 pub struct ReactDataTestIdTransform {
@@ -44,6 +48,10 @@ pub struct ReactDataTestIdTransform {
     current_class: Option<String>,
     // Fallback name for anonymous default exports, derived from the source filename.
     filename_component_name: Option<String>,
+    // Raw source filename stored for manifest output.
+    pub source_filename: Option<String>,
+    // All testid values generated during this transform (for manifest).
+    pub generated_testids: Vec<String>,
 }
 
 impl ReactDataTestIdTransform {
@@ -53,13 +61,15 @@ impl ReactDataTestIdTransform {
 
     pub fn new_with_filename(options: PluginOptions, filename: Option<String>) -> Self {
         Self {
+            filename_component_name: filename
+                .as_deref()
+                .and_then(component_name_from_filename),
+            source_filename: filename,
             options,
             component_counters: HashMap::new(),
             current_component: None,
             current_class: None,
-            filename_component_name: filename
-                .as_deref()
-                .and_then(component_name_from_filename),
+            generated_testids: Vec::new(),
         }
     }
 
@@ -136,6 +146,10 @@ impl ReactDataTestIdTransform {
         let unique_id = self.unique_element_id(&component, &element_name);
         let test_id = format!("{}.{}", component, unique_id);
         let attributes = self.attributes();
+
+        if self.options.manifest_dir.is_some() {
+            self.generated_testids.push(test_id.clone());
+        }
 
         for attr_name in attributes {
             if !Self::has_attribute(&opening.attrs, &attr_name) {
@@ -243,6 +257,30 @@ fn parse_options(config_json: Option<String>) -> PluginOptions {
         .unwrap_or_default()
 }
 
+// Writes a per-file manifest JSON into `dir`. Each source file gets its own file so
+// parallel transforms don't conflict. Merge them with scripts/merge-manifest.mjs.
+// Silently skips on any I/O error so the build never fails due to manifest issues.
+fn write_manifest(dir: &str, source_file: Option<&str>, testids: &[String]) {
+    use std::collections::HashSet;
+    let file = source_file.unwrap_or("unknown");
+    let mut seen = HashSet::new();
+    let unique: Vec<&String> = testids.iter().filter(|t| seen.insert(t.as_str())).collect();
+    let json = format!(
+        "{{\"file\":{},\"testids\":[{}]}}",
+        serde_json::to_string(file).unwrap_or_else(|_| "\"unknown\"".to_string()),
+        unique
+            .iter()
+            .map(|t| serde_json::to_string(t).unwrap_or_default())
+            .collect::<Vec<_>>()
+            .join(",")
+    );
+    // Derive a safe filename: replace path separators and colons.
+    let safe_name = file.replace(['/', '\\', ':'], "_");
+    let out_path = format!("{}/{}.json", dir, safe_name);
+    let _ = std::fs::create_dir_all(dir);
+    let _ = std::fs::write(&out_path, json);
+}
+
 #[plugin_transform]
 pub fn process_transform(program: Program, metadata: TransformPluginProgramMetadata) -> Program {
     let options = parse_options(metadata.get_transform_plugin_config());
@@ -250,6 +288,9 @@ pub fn process_transform(program: Program, metadata: TransformPluginProgramMetad
     let mut transform = ReactDataTestIdTransform::new_with_filename(options, filename);
     let mut program = program;
     program.visit_mut_with(&mut transform);
+    if let Some(ref dir) = transform.options.manifest_dir {
+        write_manifest(dir, transform.source_filename.as_deref(), &transform.generated_testids);
+    }
     program
 }
 
@@ -420,13 +461,13 @@ mod tests {
 
     #[test]
     fn attributes_falls_back_to_default_when_none() {
-        let t = ReactDataTestIdTransform::new(PluginOptions { attributes: None });
+        let t = ReactDataTestIdTransform::new(PluginOptions { attributes: None, manifest_dir: None });
         assert_eq!(t.attributes(), vec!["data-testid".to_string()]);
     }
 
     #[test]
     fn attributes_falls_back_to_default_when_empty_vec() {
-        let t = ReactDataTestIdTransform::new(PluginOptions { attributes: Some(vec![]) });
+        let t = ReactDataTestIdTransform::new(PluginOptions { attributes: Some(vec![]), manifest_dir: None });
         assert_eq!(t.attributes(), vec!["data-testid".to_string()]);
     }
 
@@ -434,6 +475,7 @@ mod tests {
     fn attributes_returns_custom_list() {
         let t = ReactDataTestIdTransform::new(PluginOptions {
             attributes: Some(vec!["data-cy".to_string(), "data-pw".to_string()]),
+            manifest_dir: None,
         });
         assert_eq!(
             t.attributes(),
@@ -526,5 +568,45 @@ mod tests {
         };
         t.inject_attributes(&mut opening);
         assert_eq!(opening.attrs.len(), 1, "should not add a second data-testid");
+    }
+
+    // --- manifest collection ---
+
+    #[test]
+    fn manifest_collects_generated_testids() {
+        let mut t = ReactDataTestIdTransform::new(PluginOptions {
+            attributes: None,
+            manifest_dir: Some("/tmp/test-manifest".to_string()),
+        });
+        t.current_component = Some("Form".to_string());
+        let mut make_opening = |tag: &str| JSXOpeningElement {
+            span: DUMMY_SP,
+            name: JSXElementName::Ident(IdentName { span: DUMMY_SP, sym: tag.into() }.into()),
+            attrs: vec![],
+            self_closing: true,
+            type_args: None,
+        };
+        t.inject_attributes(&mut make_opening("input"));
+        t.inject_attributes(&mut make_opening("input"));
+        t.inject_attributes(&mut make_opening("button"));
+        assert_eq!(
+            t.generated_testids,
+            vec!["Form.input", "Form.input2", "Form.button"]
+        );
+    }
+
+    #[test]
+    fn manifest_not_collected_when_manifest_dir_none() {
+        let mut t = ReactDataTestIdTransform::new(PluginOptions::default());
+        t.current_component = Some("Form".to_string());
+        let mut opening = JSXOpeningElement {
+            span: DUMMY_SP,
+            name: JSXElementName::Ident(IdentName { span: DUMMY_SP, sym: "div".into() }.into()),
+            attrs: vec![],
+            self_closing: true,
+            type_args: None,
+        };
+        t.inject_attributes(&mut opening);
+        assert!(t.generated_testids.is_empty());
     }
 }
