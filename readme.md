@@ -11,7 +11,7 @@
 
 Automatically adds `data-testid` attributes to your React components during the build process, making it easier to write reliable end-to-end tests. Features **component-scoped unique counters** for predictable, collision-free test IDs.
 
-**Choose your compiler:** [Babel Plugin](#-babel-plugin) · [SWC Plugin](#-swc-plugin)
+**Choose your compiler:** [Babel Plugin](#-babel-plugin) · [SWC Plugin](#-swc-plugin) · [SWC NPM.js Plugin](https://www.npmjs.com/package/swc-plugin-react-data-testid)
 
 ---
 
