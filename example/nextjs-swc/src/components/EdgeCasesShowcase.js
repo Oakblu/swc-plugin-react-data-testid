@@ -105,6 +105,73 @@ function IsoBeta() {
   return <div><button>Beta</button></div>;
 }
 
+// ─── Many identical elements ──────────────────────────────────────────────────
+// Counter suffix is appended only from the second occurrence:
+// li → li2 → li3 → li4 → li5
+function ManyItemsList() {
+  return (
+    <ul>
+      <li>One (ManyItemsList.li)</li>
+      <li>Two (ManyItemsList.li2)</li>
+      <li>Three (ManyItemsList.li3)</li>
+      <li>Four (ManyItemsList.li4)</li>
+      <li>Five (ManyItemsList.li5)</li>
+    </ul>
+  );
+}
+
+// ─── IIFE counter sharing ─────────────────────────────────────────────────────
+// The IIFE arrow is a CallExpr callee, not a VarDeclarator init.
+// No new scope is opened — JSX inside shares the enclosing component's counter.
+// Expected: IifeDemo.div, then IifeDemo.strong or IifeDemo.em
+function IifeDemo({ role }) {
+  return (
+    <div>
+      {(() => {
+        if (role === "admin") return <strong>Admin (IifeDemo.strong)</strong>;
+        return <em>Guest (IifeDemo.em)</em>;
+      })()}
+    </div>
+  );
+}
+
+// ─── Try / catch JSX ─────────────────────────────────────────────────────────
+// JSX in both the try block and the catch block is tagged.
+// Expected: TryCatchDemo.div + TryCatchDemo.p (happy path)
+//        or TryCatchDemo.span                  (error path)
+function TryCatchDemo() {
+  const [hasError, setHasError] = useState(false);
+  try {
+    if (hasError) throw new Error("demo error");
+    return (
+      <div>
+        <p>No error (TryCatchDemo.div + TryCatchDemo.p)</p>
+        <button onClick={() => setHasError(true)}>Trigger catch branch</button>
+      </div>
+    );
+  } catch (e) {
+    return (
+      <span>
+        Caught: {e.message} (TryCatchDemo.span){" "}
+        <button onClick={() => setHasError(false)}>Reset</button>
+      </span>
+    );
+  }
+}
+
+// ─── JSX in default params ────────────────────────────────────────────────────
+// enter_component runs before visit_mut_children_with, so param default-value
+// JSX is visited while current_component is already set.
+// Expected: DefaultParamDemo.em  (the default-param JSX, visited before the body!)
+//         + DefaultParamDemo.div  (the body JSX)
+function DefaultParamDemo({ fallback = <em>default fallback</em> }) {
+  return (
+    <div>
+      {fallback}
+    </div>
+  );
+}
+
 // ─── Main showcase ────────────────────────────────────────────────────────────
 export default function EdgeCasesShowcase() {
   return (
@@ -186,6 +253,49 @@ export default function EdgeCasesShowcase() {
         </small>
         <IsoAlpha />
         <IsoBeta />
+      </section>
+
+      <section>
+        <h3>Many identical elements — counter past 3</h3>
+        <small>
+          Suffix sequence: no suffix → 2 → 3 → 4 → 5. Inspect each{" "}
+          <code>&lt;li&gt;</code> to verify.
+        </small>
+        <ManyItemsList />
+      </section>
+
+      <section>
+        <h3>IIFE counter sharing</h3>
+        <small>
+          The IIFE arrow is a <code>CallExpr</code> callee, not a{" "}
+          <code>VarDeclarator</code> init — no new scope.{" "}
+          <code>IifeDemo.strong</code> / <code>IifeDemo.em</code> share the
+          parent counter alongside <code>IifeDemo.div</code>.
+        </small>
+        <IifeDemo role="admin" />
+        <IifeDemo role="guest" />
+      </section>
+
+      <section>
+        <h3>Try / catch JSX</h3>
+        <small>
+          Both branches are tagged. Happy path:{" "}
+          <code>TryCatchDemo.div</code> + <code>TryCatchDemo.p</code>.{" "}
+          Error path: <code>TryCatchDemo.span</code>.
+        </small>
+        <TryCatchDemo />
+      </section>
+
+      <section>
+        <h3>JSX in default params</h3>
+        <small>
+          The plugin enters component scope before visiting params, so the{" "}
+          <code>&lt;em&gt;</code> in the default value gets{" "}
+          <code>DefaultParamDemo.em</code> — before body elements.
+          The wrapping <code>&lt;div&gt;</code> is{" "}
+          <code>DefaultParamDemo.div</code>.
+        </small>
+        <DefaultParamDemo />
       </section>
     </div>
   );
