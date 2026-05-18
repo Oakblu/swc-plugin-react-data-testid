@@ -320,4 +320,211 @@ mod tests {
             Some(vec!["data-cy".to_string(), "data-test".to_string()])
         );
     }
+
+    // --- unique_element_id ---
+
+    #[test]
+    fn unique_element_id_first_occurrence_no_suffix() {
+        let mut t = ReactDataTestIdTransform::new(PluginOptions::default());
+        assert_eq!(t.unique_element_id("Comp", "div"), "div");
+    }
+
+    #[test]
+    fn unique_element_id_second_occurrence_suffix_2() {
+        let mut t = ReactDataTestIdTransform::new(PluginOptions::default());
+        t.unique_element_id("Comp", "div");
+        assert_eq!(t.unique_element_id("Comp", "div"), "div2");
+    }
+
+    #[test]
+    fn unique_element_id_third_occurrence_suffix_3() {
+        let mut t = ReactDataTestIdTransform::new(PluginOptions::default());
+        t.unique_element_id("Comp", "div");
+        t.unique_element_id("Comp", "div");
+        assert_eq!(t.unique_element_id("Comp", "div"), "div3");
+    }
+
+    #[test]
+    fn unique_element_id_counters_isolated_per_component() {
+        let mut t = ReactDataTestIdTransform::new(PluginOptions::default());
+        assert_eq!(t.unique_element_id("Foo", "div"), "div");
+        assert_eq!(t.unique_element_id("Bar", "div"), "div");
+        assert_eq!(t.unique_element_id("Foo", "div"), "div2");
+        assert_eq!(t.unique_element_id("Bar", "div"), "div2");
+    }
+
+    #[test]
+    fn unique_element_id_different_element_types_independent() {
+        let mut t = ReactDataTestIdTransform::new(PluginOptions::default());
+        assert_eq!(t.unique_element_id("Comp", "div"), "div");
+        assert_eq!(t.unique_element_id("Comp", "span"), "span");
+        assert_eq!(t.unique_element_id("Comp", "div"), "div2");
+        assert_eq!(t.unique_element_id("Comp", "span"), "span2");
+    }
+
+    // --- enter_component ---
+
+    #[test]
+    fn enter_component_returns_previous_component() {
+        let mut t = ReactDataTestIdTransform::new(PluginOptions::default());
+        assert_eq!(t.enter_component("First".to_string()), None);
+        assert_eq!(
+            t.enter_component("Second".to_string()),
+            Some("First".to_string())
+        );
+    }
+
+    #[test]
+    fn enter_component_resets_counters_for_that_component() {
+        let mut t = ReactDataTestIdTransform::new(PluginOptions::default());
+        t.unique_element_id("Comp", "div");
+        t.unique_element_id("Comp", "div");
+        t.enter_component("Comp".to_string());
+        assert_eq!(t.unique_element_id("Comp", "div"), "div");
+    }
+
+    // --- component_name_from_filename ---
+
+    #[test]
+    fn component_name_from_filename_uppercases_first_char() {
+        assert_eq!(
+            component_name_from_filename("/src/button.tsx"),
+            Some("Button".to_string())
+        );
+    }
+
+    #[test]
+    fn component_name_from_filename_already_uppercase_unchanged() {
+        assert_eq!(
+            component_name_from_filename("/src/MyComponent.tsx"),
+            Some("MyComponent".to_string())
+        );
+    }
+
+    #[test]
+    fn component_name_from_filename_no_extension_returns_none() {
+        assert_eq!(component_name_from_filename("button"), None);
+    }
+
+    #[test]
+    fn component_name_from_filename_multi_dot_stem_returns_none() {
+        assert_eq!(component_name_from_filename("index.test.tsx"), None);
+    }
+
+    #[test]
+    fn component_name_from_filename_empty_stem_returns_none() {
+        assert_eq!(component_name_from_filename(".hidden"), None);
+    }
+
+    // --- attributes() ---
+
+    #[test]
+    fn attributes_falls_back_to_default_when_none() {
+        let t = ReactDataTestIdTransform::new(PluginOptions { attributes: None });
+        assert_eq!(t.attributes(), vec!["data-testid".to_string()]);
+    }
+
+    #[test]
+    fn attributes_falls_back_to_default_when_empty_vec() {
+        let t = ReactDataTestIdTransform::new(PluginOptions { attributes: Some(vec![]) });
+        assert_eq!(t.attributes(), vec!["data-testid".to_string()]);
+    }
+
+    #[test]
+    fn attributes_returns_custom_list() {
+        let t = ReactDataTestIdTransform::new(PluginOptions {
+            attributes: Some(vec!["data-cy".to_string(), "data-pw".to_string()]),
+        });
+        assert_eq!(
+            t.attributes(),
+            vec!["data-cy".to_string(), "data-pw".to_string()]
+        );
+    }
+
+    // --- has_attribute ---
+
+    #[test]
+    fn has_attribute_returns_true_when_attr_present() {
+        let attr = JSXAttrOrSpread::JSXAttr(JSXAttr {
+            span: DUMMY_SP,
+            name: JSXAttrName::Ident(IdentName { span: DUMMY_SP, sym: "data-testid".into() }),
+            value: None,
+        });
+        assert!(ReactDataTestIdTransform::has_attribute(&[attr], "data-testid"));
+    }
+
+    #[test]
+    fn has_attribute_returns_false_for_different_attr() {
+        let attr = JSXAttrOrSpread::JSXAttr(JSXAttr {
+            span: DUMMY_SP,
+            name: JSXAttrName::Ident(IdentName { span: DUMMY_SP, sym: "className".into() }),
+            value: None,
+        });
+        assert!(!ReactDataTestIdTransform::has_attribute(&[attr], "data-testid"));
+    }
+
+    // --- inject_attributes ---
+
+    #[test]
+    fn inject_attributes_skips_when_no_current_component() {
+        let mut t = ReactDataTestIdTransform::new(PluginOptions::default());
+        let mut opening = JSXOpeningElement {
+            span: DUMMY_SP,
+            name: JSXElementName::Ident(IdentName { span: DUMMY_SP, sym: "div".into() }.into()),
+            attrs: vec![],
+            self_closing: true,
+            type_args: None,
+        };
+        t.inject_attributes(&mut opening);
+        assert!(opening.attrs.is_empty());
+    }
+
+    #[test]
+    fn inject_attributes_inserts_at_position_zero() {
+        let mut t = ReactDataTestIdTransform::new(PluginOptions::default());
+        t.current_component = Some("Comp".to_string());
+        let existing = JSXAttrOrSpread::JSXAttr(JSXAttr {
+            span: DUMMY_SP,
+            name: JSXAttrName::Ident(IdentName { span: DUMMY_SP, sym: "className".into() }),
+            value: None,
+        });
+        let mut opening = JSXOpeningElement {
+            span: DUMMY_SP,
+            name: JSXElementName::Ident(IdentName { span: DUMMY_SP, sym: "div".into() }.into()),
+            attrs: vec![existing],
+            self_closing: true,
+            type_args: None,
+        };
+        t.inject_attributes(&mut opening);
+        assert_eq!(opening.attrs.len(), 2);
+        if let JSXAttrOrSpread::JSXAttr(attr) = &opening.attrs[0] {
+            if let JSXAttrName::Ident(name) = &attr.name {
+                assert_eq!(name.sym.as_ref(), "data-testid");
+            } else {
+                panic!("expected Ident attr name");
+            }
+        } else {
+            panic!("expected JSXAttr at index 0");
+        }
+    }
+
+    #[test]
+    fn inject_attributes_skips_element_already_having_attr() {
+        let mut t = ReactDataTestIdTransform::new(PluginOptions::default());
+        t.current_component = Some("Comp".to_string());
+        let existing = JSXAttrOrSpread::JSXAttr(JSXAttr {
+            span: DUMMY_SP,
+            name: JSXAttrName::Ident(IdentName { span: DUMMY_SP, sym: "data-testid".into() }),
+            value: None,
+        });
+        let mut opening = JSXOpeningElement {
+            span: DUMMY_SP,
+            name: JSXElementName::Ident(IdentName { span: DUMMY_SP, sym: "div".into() }.into()),
+            attrs: vec![existing],
+            self_closing: true,
+            type_args: None,
+        };
+        t.inject_attributes(&mut opening);
+        assert_eq!(opening.attrs.len(), 1, "should not add a second data-testid");
+    }
 }

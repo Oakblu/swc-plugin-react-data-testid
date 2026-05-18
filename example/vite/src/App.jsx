@@ -4,6 +4,7 @@ import { Button, IconButton } from "./components/Buttons";
 import Modal from "./components/Modal";
 import ClassComponent from "./components/ClassComponent";
 import SimpleTest from "./SimpleTest";
+import EdgeCasesShowcase from "./components/EdgeCasesShowcase";
 import "./App.css";
 
 export default function App() {
@@ -110,6 +111,14 @@ export default function App() {
                 )}
               </div>
             </div>
+          </section>
+
+          <section className="demo-section">
+            <div className="section-header">
+              <h2>Edge Case Behaviors</h2>
+              <p>Open DevTools and inspect each element to verify the generated testids match the labels</p>
+            </div>
+            <EdgeCasesShowcase />
           </section>
         </main>
 
