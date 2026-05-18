@@ -1,20 +1,27 @@
 {
-  "files": ["README.md"],
+  "files": ["readme.md"],
   "imageSize": 40,
   "commit": false,
   "commitConvention": "angular",
   "contributors": [
     {
+      "login": "pablohpsilva",
+      "name": "pablohpsilva",
+      "avatar_url": "https://avatars.githubusercontent.com/u/2090635?v=4",
+      "profile": "https://github.com/pablohpsilva",
+      "contributions": ["maintenance", "code", "design", "doc", "ideas"]
+    },
+    {
       "login": "Kazaz-Or",
       "name": "Or Kazaz",
       "avatar_url": "https://avatars.githubusercontent.com/u/Kazaz-Or?v=4",
       "profile": "https://github.com/Kazaz-Or",
-      "contributions": ["maintenance", "code", "design", "doc", "ideas"]
+      "contributions": ["design", "ideas"]
     }
   ],
   "contributorsPerLine": 7,
-  "projectName": "babel-plugin-react-data-testid-generator",
-  "projectOwner": "Kazaz-Or",
+  "projectName": "swc-plugin-react-data-testid",
+  "projectOwner": "Oakblu",
   "repoType": "github",
   "repoHost": "https://github.com",
   "skipCi": true

@@ -23,15 +23,12 @@ jobs:
   publish:
     name: 📦 Build & Publish SWC Plugin
     runs-on: ubuntu-latest
-    if: github.ref == 'refs/heads/master' && github.actor == 'Kazaz-Or'
-    defaults:
-      run:
-        working-directory: swc-plugin-react-data-testid
+    if: github.ref == 'refs/heads/master' && github.actor == 'pablohpsilva'
 
     steps:
       - name: 🔒 Verify Release Authorization
         run: |
-          AUTHORIZED_USER="Kazaz-Or"
+          AUTHORIZED_USER="pablohpsilva"
 
           echo "🔍 Authorization Check:"
           echo "  - Authorized user: $AUTHORIZED_USER"
@@ -73,8 +70,6 @@ jobs:
 
       - name: 📦 Cache Rust Dependencies
         uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: swc-plugin-react-data-testid
 
       - name: 🧪 Run Tests
         run: cargo test
@@ -160,7 +155,6 @@ jobs:
 
           echo "✅ Git tag $TAG created and pushed"
           echo "📋 Note: Version bump was not committed to master due to branch protection"
-        working-directory: ${{ github.workspace }}
 
       - name: 📝 Create Version Bump PR
         if: ${{ !inputs.dry_run }}
@@ -175,7 +169,7 @@ jobs:
             This PR was automatically created after publishing SWC plugin v${{ steps.version_bump.outputs.new }}.
 
             **Changes:**
-            - Updated `swc-plugin-react-data-testid/package.json` version: ${{ steps.current_version.outputs.current }} → ${{ steps.version_bump.outputs.new }}
+            - Updated `package.json` version: ${{ steps.current_version.outputs.current }} → ${{ steps.version_bump.outputs.new }}
 
             **Already Published:**
             - ✅ NPM: `swc-plugin-react-data-testid@${{ steps.version_bump.outputs.new }}`
@@ -189,7 +183,7 @@ jobs:
           branch: version-bump/swc-v${{ steps.version_bump.outputs.new }}
           delete-branch: true
           include-untracked: false
-          add-paths: swc-plugin-react-data-testid/package.json
+          add-paths: package.json
 
       - name: 🎉 Create GitHub Release
         if: ${{ !inputs.dry_run }}

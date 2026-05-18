@@ -1,6 +1,6 @@
-node_modules
-coverage
-dist
-example/node_modules
-example/build
-.next
+/target
+plugin.wasm
+example/nextjs-swc/.next
+example/nextjs-swc/node_modules
+example/vite/.swc
+example/vite/node_modules

@@ -4,9 +4,9 @@ import { Button, IconButton } from "./components/Buttons";
 import Modal from "./components/Modal";
 import ClassComponent from "./components/ClassComponent";
 import SimpleTest from "./SimpleTest";
-import './App.css';
+import "./App.css";
 
-function App() {
+export default function App() {
   const [showModal, setShowModal] = useState(false);
   const [counter, setCounter] = useState(0);
 
@@ -19,15 +19,15 @@ function App() {
               ⚡ <span className="gradient-text">Data TestId Generator</span>
             </h1>
             <p className="hero-subtitle">
-              Automatic test ID generation for React components using Vite + our Babel plugin
+              Automatic test ID generation for React components using Vite + SWC plugin
             </p>
-            
+
             <div className="highlight-card">
               <div className="highlight-icon">🔍</div>
               <div>
                 <strong>Check the DOM inspector!</strong>
                 <br />
-                All elements have automatically generated <code>data-testid</code> attributes.
+                All elements have automatically generated <code>data-testid</code> attribute.
               </div>
             </div>
           </div>
@@ -58,11 +58,11 @@ function App() {
               <p>Beautiful card layouts with generated test IDs</p>
             </div>
             <div className="cards-grid">
-              <UserCard name="Jane Smith" email="jane@example.com" avatar="👩‍💻" />
+              <UserCard name="John Doe" email="john@example.com" avatar="👨‍💻" />
               <ProductCard
-                title="Vite Power Tool"
-                price="$149.99"
-                description="Lightning fast development with Vite!"
+                title="Amazing Widget"
+                price="$99.99"
+                description="This widget will change your life!"
               />
             </div>
           </section>
@@ -83,24 +83,24 @@ function App() {
               <h2>Dynamic Content</h2>
               <p>Inline JSX and conditional rendering</p>
             </div>
-            
+
             <div className="content-grid">
               <div className="content-card">
-                <h3>Vite Features</h3>
-                <span className="description">What makes Vite awesome</span>
+                <h3>Static List</h3>
+                <span className="description">Basic JSX elements</span>
                 <ul className="styled-list">
-                  <li>⚡ Lightning Fast HMR</li>
-                  <li>📦 Optimized Build</li>
-                  <li>🔧 Rich Plugin Ecosystem</li>
+                  <li>First item</li>
+                  <li>Second item</li>
+                  <li>Third item</li>
                 </ul>
               </div>
 
               <div className="content-card">
                 <h3>Conditional Content</h3>
-                <span className="description">Rendered when counter greater than 3</span>
-                {counter > 3 ? (
+                <span className="description">Rendered when counter greater than 5</span>
+                {counter > 5 ? (
                   <div className="conditional-content">
-                    <p className="success-message">🎉 Counter is greater than 3!</p>
+                    <p className="success-message">🎉 Counter is greater than 5!</p>
                     <button className="reset-btn" onClick={() => setCounter(0)}>
                       🔄 Reset Counter
                     </button>
@@ -115,7 +115,7 @@ function App() {
 
         {showModal && (
           <Modal onClose={() => setShowModal(false)}>
-            <h3>⚡ Vite Modal</h3>
+            <h3>⚡ SWC Modal</h3>
             <p>This modal also has auto-generated test IDs!</p>
             <div className="modal-actions">
               <button className="modal-btn primary" onClick={() => setShowModal(false)}>
@@ -128,12 +128,10 @@ function App() {
         <footer className="footer">
           <div className="footer-content">
             <p>🎯 <strong>All elements have unique data-testid attributes</strong> generated automatically!</p>
-            <small>Powered by babel-plugin-react-data-testid-generator + Vite ⚡</small>
+            <small>Powered by swc-plugin-react-data-testid + Vite ⚡</small>
           </div>
         </footer>
       </div>
     </div>
   );
 }
-
-export default App; 
