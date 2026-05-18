@@ -40,7 +40,7 @@ The scoped counter map (`component_counters`) is reset per component, so IDs are
 
 Rust implementation using SWC's `VisitMut` trait, compiled to WASM via `wasm32-wasip1`. Exposes a `#[plugin_transform]` entry point. Configuration deserialized from JSON via `TransformPluginProgramMetadata`.
 
-**SWC version pinning is critical**: SWC plugins must be compiled against the exact same SWC version used by the consumer (Next.js, @vitejs/plugin-react-swc, @swc/jest, etc.). The current pins in `Cargo.toml` target Next.js 16.2.6 / @swc/core 1.10.18. Changing `swc_core`, `swc_ecma_ast`, or `swc_plugin_proxy` versions requires coordinating with downstream consumers.
+**SWC version pinning is critical**: SWC plugins must be compiled against the exact same SWC version used by the consumer (Next.js, @vitejs/plugin-react-swc, @swc/jest, etc.). The current pins in `Cargo.toml` target `swc_core 65.x` / `@swc/core 1.15.x`. Changing `swc_core`, `swc_ecma_ast`, or `swc_plugin_proxy` versions requires coordinating with downstream consumers.
 
 ### Test Structure
 
@@ -53,6 +53,7 @@ Fixture suites:
 - `tests/fixture-multi-attrs/` — four attributes
 - `tests/fixture-filename/` — anonymous export filename fallback (reads `filename.txt` per fixture)
 
-### Example
+### Examples
 
 - `example/nextjs-swc/` — Next.js 16 with SWC plugin via `next.config.js` `experimental.swcPlugins`
+- `example/jest/` — Jest with `@swc/jest` transformer; run `pnpm test` to verify the plugin injects testids at build time

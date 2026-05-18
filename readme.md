@@ -95,6 +95,37 @@ module.exports = {
 
 </details>
 
+<details>
+<summary><strong>Vitest</strong></summary>
+
+Configure in `vite.config.js`:
+
+```js
+import { defineConfig } from "vite";
+import react from "@vitejs/plugin-react-swc";
+
+export default defineConfig({
+  plugins: [
+    react({
+      plugins: [["swc-plugin-react-data-testid", {}]],
+    }),
+  ],
+  test: {
+    environment: "jsdom",
+    globals: true,
+    setupFiles: ["./vitest.setup.js"],
+  },
+});
+```
+
+Create `vitest.setup.js`:
+
+```js
+import "@testing-library/jest-dom/vitest";
+```
+
+</details>
+
 ### With Custom Attributes
 
 ```json
@@ -356,7 +387,9 @@ test("user card interactions", async ({ page }) => {
 
 ---
 
-## Example Application
+## Example Applications
+
+### Next.js
 
 A complete Next.js example is available in `example/nextjs-swc/`:
 
@@ -367,6 +400,26 @@ npm run dev
 ```
 
 Open [http://localhost:3000](http://localhost:3000) and inspect the DOM to see the automatically generated `data-testid` attributes.
+
+### Jest (`@swc/jest`)
+
+A Jest example is available in `example/jest/`. It runs `@testing-library/react` tests that assert the plugin actually injected the expected `data-testid` attributes:
+
+```bash
+cd example/jest
+npm install
+npm test
+```
+
+### Vitest
+
+A Vitest example is available in `example/vitest/`. Same assertions as the Jest example, using `@vitejs/plugin-react-swc` to load the plugin:
+
+```bash
+cd example/vitest
+npm install
+npm test
+```
 
 ---
 
