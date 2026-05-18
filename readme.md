@@ -390,6 +390,21 @@ npm run build                                       # Build WASM and copy to plu
 
 Tests use Rust fixture tests in `tests/fixture.rs`. Each fixture is a directory under `tests/fixture*/` with an `input.tsx` and `output.tsx`. Run `UPDATE=1 cargo test` to regenerate outputs after algorithm changes.
 
+### Test Coverage
+
+Current coverage: **~95% line coverage** across 47 tests (6 unit tests + 41 fixture tests).
+
+To measure coverage locally:
+
+```bash
+cargo install cargo-llvm-cov
+cargo llvm-cov
+```
+
+#### Why 100% is not achievable
+
+The remaining ~5% is the `process_transform` function — the `#[plugin_transform]` WASM entry point that SWC calls at runtime. It requires `TransformPluginProgramMetadata`, a type provided by the SWC WASM runtime that cannot be constructed in a Rust unit test. This function is intentionally thin (it delegates immediately to `parse_options` and `ReactDataTestIdTransform`, both of which are fully tested). Covering it would require a full WASM integration test outside of `cargo test`.
+
 ---
 
 ## Contributors

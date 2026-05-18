@@ -237,16 +237,87 @@ impl VisitMut for ReactDataTestIdTransform {
     }
 }
 
+fn parse_options(config_json: Option<String>) -> PluginOptions {
+    config_json
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default()
+}
+
 #[plugin_transform]
 pub fn process_transform(program: Program, metadata: TransformPluginProgramMetadata) -> Program {
-    let options: PluginOptions = metadata
-        .get_transform_plugin_config()
-        .and_then(|s| serde_json::from_str(&s).ok())
-        .unwrap_or_default();
-
+    let options = parse_options(metadata.get_transform_plugin_config());
     let filename = metadata.get_context(&TransformPluginMetadataContextKind::Filename);
     let mut transform = ReactDataTestIdTransform::new_with_filename(options, filename);
     let mut program = program;
     program.visit_mut_with(&mut transform);
     program
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn element_name_returns_none_for_namespaced() {
+        let name = JSXElementName::JSXNamespacedName(JSXNamespacedName {
+            span: DUMMY_SP,
+            ns: IdentName { span: DUMMY_SP, sym: "svg".into() },
+            name: IdentName { span: DUMMY_SP, sym: "image".into() },
+        });
+        assert_eq!(ReactDataTestIdTransform::element_name(&name), None);
+    }
+
+    #[test]
+    fn has_attribute_returns_false_for_namespaced_attr_name() {
+        let attr = JSXAttrOrSpread::JSXAttr(JSXAttr {
+            span: DUMMY_SP,
+            name: JSXAttrName::JSXNamespacedName(JSXNamespacedName {
+                span: DUMMY_SP,
+                ns: IdentName { span: DUMMY_SP, sym: "xml".into() },
+                name: IdentName { span: DUMMY_SP, sym: "lang".into() },
+            }),
+            value: None,
+        });
+        assert!(!ReactDataTestIdTransform::has_attribute(&[attr], "lang"));
+    }
+
+    #[test]
+    fn inject_attributes_skips_namespaced_element() {
+        let mut transform = ReactDataTestIdTransform::new(PluginOptions::default());
+        transform.current_component = Some("Test".to_string());
+        let mut opening = JSXOpeningElement {
+            span: DUMMY_SP,
+            name: JSXElementName::JSXNamespacedName(JSXNamespacedName {
+                span: DUMMY_SP,
+                ns: IdentName { span: DUMMY_SP, sym: "svg".into() },
+                name: IdentName { span: DUMMY_SP, sym: "image".into() },
+            }),
+            attrs: vec![],
+            self_closing: true,
+            type_args: None,
+        };
+        transform.inject_attributes(&mut opening);
+        assert!(opening.attrs.is_empty());
+    }
+
+    #[test]
+    fn parse_options_returns_default_for_none() {
+        let opts = parse_options(None);
+        assert!(opts.attributes.is_none());
+    }
+
+    #[test]
+    fn parse_options_returns_default_for_invalid_json() {
+        let opts = parse_options(Some("not json at all".to_string()));
+        assert!(opts.attributes.is_none());
+    }
+
+    #[test]
+    fn parse_options_deserializes_attributes() {
+        let opts = parse_options(Some(r#"{"attributes":["data-cy","data-test"]}"#.to_string()));
+        assert_eq!(
+            opts.attributes,
+            Some(vec!["data-cy".to_string(), "data-test".to_string()])
+        );
+    }
 }

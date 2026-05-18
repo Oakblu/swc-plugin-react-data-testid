@@ -89,6 +89,26 @@ fn fixture_multi_attrs(input: PathBuf) {
     );
 }
 
+// Tests that an explicitly empty attributes array falls back to the default ["data-testid"].
+#[testing::fixture("tests/fixture-empty-attrs/*/input.tsx")]
+fn fixture_empty_attrs(input: PathBuf) {
+    let output = input.with_file_name("output.tsx");
+    test_fixture(
+        Syntax::Typescript(TsSyntax {
+            tsx: true,
+            ..Default::default()
+        }),
+        &|_| {
+            visit_mut_pass(ReactDataTestIdTransform::new(PluginOptions {
+                attributes: Some(vec![]),
+            }))
+        },
+        &input,
+        &output,
+        Default::default(),
+    );
+}
+
 // Reads filename.txt from the fixture directory and passes it to the transform
 // so we can test the filename-based fallback for anonymous default exports.
 #[testing::fixture("tests/fixture-filename/*/input.tsx")]
