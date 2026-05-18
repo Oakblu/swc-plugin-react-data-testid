@@ -392,7 +392,7 @@ Tests use Rust fixture tests in `tests/fixture.rs`. Each fixture is a directory 
 
 ### Test Coverage
 
-Current coverage: **~95% line coverage** across 47 tests (6 unit tests + 41 fixture tests).
+Current coverage: **96.78% line coverage** across 91 tests (26 unit tests + 65 fixture tests).
 
 To measure coverage locally:
 

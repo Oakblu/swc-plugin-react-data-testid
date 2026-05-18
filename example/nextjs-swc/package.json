@@ -11,6 +11,7 @@
     "clean": "rm -rf .next"
   },
   "dependencies": {
+    "@swc/helpers": "0.5.15",
     "next": "16.2.6",
     "react": "^18.2.0",
     "react-dom": "^18.2.0"
@@ -18,6 +19,6 @@
   "devDependencies": {
     "eslint": "^9.0.0",
     "eslint-config-next": "16.2.6",
-    "swc-plugin-react-data-testid": "file:../../swc-plugin-react-data-testid"
+    "swc-plugin-react-data-testid": "file:../.."
   }
 }
