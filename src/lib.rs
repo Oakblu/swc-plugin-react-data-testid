@@ -52,6 +52,9 @@ pub struct ReactDataTestIdTransform {
     pub source_filename: Option<String>,
     // All testid values generated during this transform (for manifest).
     pub generated_testids: Vec<String>,
+    // When inside a .map((item, index) => ...) callback, holds the index param name.
+    // Used to generate dynamic testids like {"Comp.el-" + index} instead of static strings.
+    map_index_var: Option<String>,
 }
 
 impl ReactDataTestIdTransform {
@@ -70,6 +73,7 @@ impl ReactDataTestIdTransform {
             current_component: None,
             current_class: None,
             generated_testids: Vec::new(),
+            map_index_var: None,
         }
     }
 
@@ -133,6 +137,66 @@ impl ReactDataTestIdTransform {
         })
     }
 
+    // Generates attr_name={"prefix-" + index_var} for JSX inside .map() callbacks.
+    fn make_dynamic_attr(attr_name: &str, prefix: &str, index_var: &str) -> JSXAttrOrSpread {
+        let bin_expr = Expr::Bin(BinExpr {
+            span: DUMMY_SP,
+            op: BinaryOp::Add,
+            left: Box::new(Expr::Lit(Lit::Str(Str {
+                span: DUMMY_SP,
+                value: format!("{}-", prefix).into(),
+                raw: None,
+            }))),
+            right: Box::new(Expr::Ident(
+                IdentName { span: DUMMY_SP, sym: index_var.into() }.into(),
+            )),
+        });
+        JSXAttrOrSpread::JSXAttr(JSXAttr {
+            span: DUMMY_SP,
+            name: JSXAttrName::Ident(IdentName {
+                span: DUMMY_SP,
+                sym: attr_name.into(),
+            }),
+            value: Some(JSXAttrValue::JSXExprContainer(JSXExprContainer {
+                span: DUMMY_SP,
+                expr: JSXExpr::Expr(Box::new(bin_expr)),
+            })),
+        })
+    }
+
+    // If the call is array.map((item, index) => ...) and the callback has an explicit
+    // index parameter, returns that parameter's name; otherwise returns None.
+    fn extract_map_index_var(n: &CallExpr) -> Option<String> {
+        let is_map = match &n.callee {
+            Callee::Expr(e) => matches!(
+                e.as_ref(),
+                Expr::Member(m) if matches!(&m.prop, MemberProp::Ident(i) if i.sym.as_ref() == "map")
+            ),
+            _ => false,
+        };
+        if !is_map {
+            return None;
+        }
+        let callback = n.args.first()?.expr.as_ref();
+        match callback {
+            Expr::Arrow(arrow) if arrow.params.len() >= 2 => {
+                if let Pat::Ident(b) = &arrow.params[1] {
+                    Some(b.sym.to_string())
+                } else {
+                    None
+                }
+            }
+            Expr::Fn(fn_expr) if fn_expr.function.params.len() >= 2 => {
+                if let Pat::Ident(b) = &fn_expr.function.params[1].pat {
+                    Some(b.sym.to_string())
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        }
+    }
+
     fn inject_attributes(&mut self, opening: &mut JSXOpeningElement) {
         let component = match self.current_component.clone() {
             Some(c) => c,
@@ -153,7 +217,12 @@ impl ReactDataTestIdTransform {
 
         for attr_name in attributes {
             if !Self::has_attribute(&opening.attrs, &attr_name) {
-                opening.attrs.insert(0, Self::make_attr(&attr_name, &test_id));
+                let attr = if let Some(ref idx) = self.map_index_var {
+                    Self::make_dynamic_attr(&attr_name, &test_id, idx)
+                } else {
+                    Self::make_attr(&attr_name, &test_id)
+                };
+                opening.attrs.insert(0, attr);
             }
         }
     }
@@ -243,6 +312,18 @@ impl VisitMut for ReactDataTestIdTransform {
             }
         }
         n.visit_mut_children_with(self);
+    }
+
+    // Detects array.map((item, index) => ...) and sets map_index_var so that
+    // inject_attributes can emit dynamic testids like {"Comp.el-" + index}.
+    fn visit_mut_call_expr(&mut self, n: &mut CallExpr) {
+        if let Some(index_var) = Self::extract_map_index_var(n) {
+            let prev = self.map_index_var.replace(index_var);
+            n.visit_mut_children_with(self);
+            self.map_index_var = prev;
+        } else {
+            n.visit_mut_children_with(self);
+        }
     }
 
     fn visit_mut_jsx_element(&mut self, n: &mut JSXElement) {
@@ -608,5 +689,137 @@ mod tests {
         };
         t.inject_attributes(&mut opening);
         assert!(t.generated_testids.is_empty());
+    }
+
+    // --- extract_map_index_var ---
+
+    fn make_arrow_call_expr(params: Vec<Pat>) -> CallExpr {
+        CallExpr {
+            span: DUMMY_SP,
+            ctxt: Default::default(),
+            callee: Callee::Expr(Box::new(Expr::Member(MemberExpr {
+                span: DUMMY_SP,
+                obj: Box::new(Expr::Ident(
+                    IdentName { span: DUMMY_SP, sym: "items".into() }.into(),
+                )),
+                prop: MemberProp::Ident(IdentName { span: DUMMY_SP, sym: "map".into() }),
+            }))),
+            args: vec![ExprOrSpread {
+                spread: None,
+                expr: Box::new(Expr::Arrow(ArrowExpr {
+                    span: DUMMY_SP,
+                    ctxt: Default::default(),
+                    params,
+                    body: Box::new(BlockStmtOrExpr::Expr(Box::new(Expr::Lit(Lit::Null(Null {
+                        span: DUMMY_SP,
+                    }))))),
+                    is_async: false,
+                    is_generator: false,
+                    type_params: None,
+                    return_type: None,
+                })),
+            }],
+            type_args: None,
+        }
+    }
+
+    #[test]
+    fn extract_map_index_var_returns_index_param_name() {
+        let call = make_arrow_call_expr(vec![
+            Pat::Ident(BindingIdent {
+                id: IdentName { span: DUMMY_SP, sym: "item".into() }.into(),
+                type_ann: None,
+            }),
+            Pat::Ident(BindingIdent {
+                id: IdentName { span: DUMMY_SP, sym: "idx".into() }.into(),
+                type_ann: None,
+            }),
+        ]);
+        assert_eq!(
+            ReactDataTestIdTransform::extract_map_index_var(&call),
+            Some("idx".to_string())
+        );
+    }
+
+    #[test]
+    fn extract_map_index_var_returns_none_when_only_one_param() {
+        let call = make_arrow_call_expr(vec![Pat::Ident(BindingIdent {
+            id: IdentName { span: DUMMY_SP, sym: "item".into() }.into(),
+            type_ann: None,
+        })]);
+        assert_eq!(
+            ReactDataTestIdTransform::extract_map_index_var(&call),
+            None
+        );
+    }
+
+    #[test]
+    fn extract_map_index_var_returns_none_for_non_map_call() {
+        let call = CallExpr {
+            span: DUMMY_SP,
+            ctxt: Default::default(),
+            callee: Callee::Expr(Box::new(Expr::Member(MemberExpr {
+                span: DUMMY_SP,
+                obj: Box::new(Expr::Ident(
+                    IdentName { span: DUMMY_SP, sym: "items".into() }.into(),
+                )),
+                prop: MemberProp::Ident(IdentName { span: DUMMY_SP, sym: "filter".into() }),
+            }))),
+            args: vec![],
+            type_args: None,
+        };
+        assert_eq!(
+            ReactDataTestIdTransform::extract_map_index_var(&call),
+            None
+        );
+    }
+
+    // --- inject_attributes with map_index_var ---
+
+    #[test]
+    fn inject_attributes_uses_dynamic_attr_when_in_map_context() {
+        let mut t = ReactDataTestIdTransform::new(PluginOptions::default());
+        t.current_component = Some("List".to_string());
+        t.map_index_var = Some("index".to_string());
+        let mut opening = JSXOpeningElement {
+            span: DUMMY_SP,
+            name: JSXElementName::Ident(IdentName { span: DUMMY_SP, sym: "li".into() }.into()),
+            attrs: vec![],
+            self_closing: false,
+            type_args: None,
+        };
+        t.inject_attributes(&mut opening);
+        assert_eq!(opening.attrs.len(), 1);
+        if let JSXAttrOrSpread::JSXAttr(attr) = &opening.attrs[0] {
+            assert!(
+                matches!(&attr.value, Some(JSXAttrValue::JSXExprContainer(_))),
+                "expected JSXExprContainer for dynamic testid"
+            );
+        } else {
+            panic!("expected JSXAttr");
+        }
+    }
+
+    #[test]
+    fn inject_attributes_uses_static_attr_when_not_in_map_context() {
+        let mut t = ReactDataTestIdTransform::new(PluginOptions::default());
+        t.current_component = Some("List".to_string());
+        let mut opening = JSXOpeningElement {
+            span: DUMMY_SP,
+            name: JSXElementName::Ident(IdentName { span: DUMMY_SP, sym: "li".into() }.into()),
+            attrs: vec![],
+            self_closing: false,
+            type_args: None,
+        };
+        t.inject_attributes(&mut opening);
+        assert_eq!(opening.attrs.len(), 1);
+        if let JSXAttrOrSpread::JSXAttr(attr) = &opening.attrs[0] {
+            assert!(
+                matches!(&attr.value, Some(JSXAttrValue::Str(_))),
+                "expected static Str for normal testid"
+            );
+        } else {
+            panic!("expected JSXAttr");
+        }
     }
 }
