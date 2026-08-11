@@ -446,7 +446,7 @@ needed for any of this**:
 {Children.map(children, (child) => <li>{child}</li>)}
 {$.map(items, (item) => <li>{item}</li>)}
 {items.map((item) => <li>{item}</li>, this)}    // .map(cb, thisArg) is still Array.map
-{items.pipe(map((item) => <li>{item}</li>)))}   // RxJS operator: passes (value, index)
+{items$.pipe(map((item) => <li>{item}</li>))}   // RxJS operator: passes (value, index)
 ```
 
 Nested callbacks contribute one index segment each, so cells stay unique across rows:

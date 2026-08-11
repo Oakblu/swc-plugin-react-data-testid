@@ -21,7 +21,7 @@ and recognises the call shape in every position a callback can occupy:
 {items.flatMap((item) => <li/>)}       // flatMap, like map
 {_.map(items, (item) => <li/>)}        // lodash, Children.map, $.map
 {items.map((item) => <li/>, this)}     // .map(cb, thisArg) is still Array.prototype.map
-{items.pipe(map((item) => <li/>))}     // the RxJS operator passes (value, index)
+{items$.pipe(map((item) => <li/>))}    // the RxJS operator passes (value, index)
 ```
 
 Nested callbacks now contribute one id segment each — `Table.td-0-0`, `Table.td-0-1`,
