@@ -134,6 +134,54 @@ fn fixture_no_auto_index(input: PathBuf) {
     );
 }
 
+// Every opt-out at once — the 0.1.x id scheme, for a codebase migrating in stages.
+// The defaults are what deliver unique ids; these flags only take that away.
+#[testing::fixture("tests/fixture-legacy-ids/*/input.tsx")]
+fn fixture_legacy_ids(input: PathBuf) {
+    let output = input.with_file_name("output.tsx");
+    test_fixture(
+        Syntax::Typescript(TsSyntax {
+            tsx: true,
+            ..Default::default()
+        }),
+        &|_| {
+            visit_mut_pass(ReactDataTestIdTransform::new(PluginOptions {
+                auto_index: Some(false),
+                collection_first_map: Some(false),
+                nested_indexes: Some(false),
+                map_methods: Some(vec!["map".to_string()]),
+                ..Default::default()
+            }))
+        },
+        &input,
+        &output,
+        Default::default(),
+    );
+}
+
+// nestedIndexes: false on its own, with autoIndex still appending. Guards the rule that
+// a parameter is written back only when a testid actually referenced it — the outer
+// callback of a nested pair contributes nothing here, so it must keep its signature.
+#[testing::fixture("tests/fixture-flat-indexes/*/input.tsx")]
+fn fixture_flat_indexes(input: PathBuf) {
+    let output = input.with_file_name("output.tsx");
+    test_fixture(
+        Syntax::Typescript(TsSyntax {
+            tsx: true,
+            ..Default::default()
+        }),
+        &|_| {
+            visit_mut_pass(ReactDataTestIdTransform::new(PluginOptions {
+                nested_indexes: Some(false),
+                ..Default::default()
+            }))
+        },
+        &input,
+        &output,
+        Default::default(),
+    );
+}
+
 // Reads filename.txt from the fixture directory and passes it to the transform
 // so we can test the filename-based fallback for anonymous default exports.
 #[testing::fixture("tests/fixture-filename/*/input.tsx")]
@@ -304,6 +352,114 @@ mod correctness {
     }
 
     #[test]
+    fn auto_index_false_governs_appending_only() {
+        // Pins the exact scope of the opt-out, which the migration notes describe: it
+        // suppresses an *appended* index and nothing else. A declared index is still
+        // used, including in the shapes 0.2.0 newly detects — so `autoIndex: false` is
+        // not a general "give me 0.1.x ids back" switch.
+        check("tests/fixture-no-auto-index/opt-out", true, &[
+            r#"items.map((item)=><li data-testid="List.li">"#,   // restored to static
+            r#"data-testid={"Declared.li-" + index}"#,           // declared: still dynamic
+            r#"data-testid={"FlatMap.li-" + i}"#,                // newly detected, no opt-out
+            r#"data-testid={"Lodash.li-" + i}"#,                 // newly detected, no opt-out
+        ]);
+        let output =
+            std::fs::read_to_string("tests/fixture-no-auto-index/opt-out/output.tsx").unwrap();
+        assert!(
+            !output.contains("__testidIdx"),
+            "no index parameter may be appended while autoIndex is false"
+        );
+    }
+
+    #[test]
+    fn every_opt_out_at_once_reproduces_the_legacy_scheme() {
+        // The staged-migration escape hatch: with all four flags set, ids are exactly
+        // what 0.1.x produced. This is the ONLY configuration that gives that, and it is
+        // opt-in — the defaults infer as much as possible.
+        check("tests/fixture-legacy-ids/all-off", true, &[
+            r#"items.map((item)=><li data-testid="List.li">"#,     // autoIndex: false
+            r#"flatMap((group, i)=><li data-testid="Flat.li">"#,   // mapMethods: ["map"]
+            r#"_.map(items, (item, i)=><li data-testid="Lodash.li">"#, // collectionFirstMap
+            r#"data-testid={"Table.td-" + c}"#,                    // nestedIndexes: false
+        ]);
+        let output = std::fs::read_to_string("tests/fixture-legacy-ids/all-off/output.tsx").unwrap();
+        assert!(
+            !output.contains("__testidIdx"),
+            "no parameter may be appended with autoIndex disabled"
+        );
+        assert!(
+            !output.contains(r#""Table.td-" + r"#),
+            "with nestedIndexes off only the innermost callback contributes"
+        );
+    }
+
+    #[test]
+    fn nested_indexes_off_still_appends_only_what_is_used() {
+        // The flag combination that exercises the write-back rule: appending is ON, but
+        // only the innermost callback contributes a segment. An outer callback that
+        // renders no JSX of its own must keep its original signature.
+        check("tests/fixture-flat-indexes/inner-only", true, &[
+            // innermost index only — no outer segment
+            r#"data-testid={"Table.td" + (__testidIdx1 === void 0 ? "" : "-" + __testidIdx1)}"#,
+            // the <tr> is inside one callback, so it does use the outer index
+            r#"rows.map((cells, __testidIdx0)"#,
+            // …but here nothing references the outer index, so no parameter is added
+            r#"{rows.map((cells)=>cells.map((cell, __testidIdx4)"#,
+        ]);
+        let output =
+            std::fs::read_to_string("tests/fixture-flat-indexes/inner-only/output.tsx").unwrap();
+        assert!(
+            !output.contains(r#""Table.td" + (__testidIdx0"#),
+            "with nestedIndexes off, an outer index must not reach an inner element's id"
+        );
+    }
+
+    #[test]
+    fn dynamic_ids_with_multiple_attributes() {
+        // Each attribute gets its own copy of the index expression, all referencing the
+        // same binding — and the parameter is appended once, not once per attribute.
+        check("tests/fixture-options/dynamic-ids-multi-attr", false, &[
+            r#"data-cy={"List.li" + (__testidIdx0 === void 0 ? "" : "-" + __testidIdx0)} data-testid={"List.li" + (__testidIdx0 === void 0 ? "" : "-" + __testidIdx0)}"#,
+            r#"data-cy={"Declared.li-" + i} data-testid={"Declared.li-" + i}"#,
+            // an existing attribute is preserved; only the missing one is added
+            r#"<li data-testid={"Partial.li-" + i} data-cy="pinned">"#,
+            // nested: both attributes carry both segments
+            r#"data-testid={"Table.td" + (__testidIdx1 === void 0 ? "" : "-" + __testidIdx1) + (__testidIdx2 === void 0 ? "" : "-" + __testidIdx2)}"#,
+        ]);
+        let output =
+            std::fs::read_to_string("tests/fixture-options/dynamic-ids-multi-attr/output.tsx")
+                .unwrap();
+        assert_eq!(
+            output.matches("(item, __testidIdx0)").count(),
+            1,
+            "the index parameter must be appended once, not once per attribute"
+        );
+    }
+
+    #[test]
+    fn filename_derived_name_reaches_dynamic_ids() {
+        // The prefix for an anonymous default export comes from the filename; it has to
+        // survive into the dynamic form, not just the static one.
+        check("tests/fixture-filename/anonymous-export-map", true, &[
+            r#"data-testid="Star-list.ul""#,
+            r#"data-testid={"Star-list.li" + (__testidIdx0 === void 0 ? "" : "-" + __testidIdx0)}"#,
+        ]);
+    }
+
+    #[test]
+    fn class_component_map() {
+        // Index inference works inside render(), and NOT outside it: a non-render method
+        // has no active component, so its callback must keep its original signature.
+        check("tests/fixture/class-component-map", true, &[
+            r#"data-testid={"ItemList.li" + (__testidIdx0 === void 0 ? "" : "-" + __testidIdx0)}"#,
+            // a declared outer index composes with an appended inner one
+            r#"data-testid={"Grid.td-" + r + (__testidIdx2 === void 0 ? "" : "-" + __testidIdx2)}"#,
+            // renderRow is not render(): untouched, no parameter appended
+            r#"return row.split("").map((ch)=><span>{ch}</span>);"#,
+        ]);
+    }
+
+    #[test]
     fn map_index_param_shapes() {
         // a second parameter that still binds one identifier is usable as the index
         check("tests/fixture/map-index-param-shapes", true, &[
@@ -314,6 +470,9 @@ mod correctness {
             // a destructuring pattern binds nothing to reference: static id, and the
             // occupied slot means no parameter is appended either
             r#"items.map((item, [i])=><li data-testid="Destructured.li">"#,
+            // a default on the first parameter leaves the index slot free; a parameter
+            // without a default may legally follow one that has it
+            r#"items.map((item = "?", __testidIdx0)"#,
         ]);
     }
 
@@ -357,21 +516,46 @@ mod correctness {
 
     #[test]
     fn map_no_inject_cases() {
-        // shapes where a callback is NOT called with an index, or cannot take one
+        // shapes where nothing dynamic can be emitted at all: no parameter list to read,
+        // no attribute to write, or no identifier bound to reference
         check("tests/fixture/map-no-inject-cases", false, &[
-            r#"R.map((item)=><li data-testid="Ramda.li">"#, // ramda: fn first, no index
-            r#"map((item)=><li data-testid="Curried.li">"#, // bare map(fn): curried
-            r#"items.map(renderItem)"#,                     // no parameter list to extend
-            r#"items.map((...args)=>"#,                     // nothing may follow ...rest
-            r#".map((item)=>item.trim())"#,                 // no JSX → signature untouched
+            r#"items.map(renderItem)"#,                       // no parameter list
+            r#".map((item)=>item.trim())"#,                   // no JSX → signature untouched
             r#"items.map((item)=><li data-testid="custom">"#, // attr already present
-            r#"return <li data-testid="ThisArg.li">"#,      // .map(cb, thisArg): ambiguous
+            r#"items.map((item, [i])=><li data-testid="Destructured.li">"#, // nothing bound
         ]);
         let output =
             std::fs::read_to_string("tests/fixture/map-no-inject-cases/output.tsx").unwrap();
         assert!(
             !output.contains("__testidIdx"),
             "no index parameter may be appended in any of these shapes"
+        );
+    }
+
+    #[test]
+    fn map_uncertain_callees() {
+        // The syntax cannot say whether these callees pass an index, so all are inferred
+        // and every segment is guarded. Narrowing detection instead would guarantee
+        // duplicate ids for the ones that DO pass an index (RxJS, .map(cb, thisArg)).
+        check("tests/fixture/map-uncertain-callees", true, &[
+            // ramda order — a parameter is appended, and drops out at runtime
+            r#"R.map((item, __testidIdx0)"#,
+            r#"data-testid={"Ramda.li" + (__testidIdx0 === void 0 ? "" : "-" + __testidIdx0)}"#,
+            // bare map(fn) — RxJS passes an index here, curried ramda does not
+            r#"map((item, __testidIdx1)"#,
+            // .map(cb, thisArg) is Array.prototype.map: the index is real
+            r#"function(item, __testidIdx2)"#,
+            // a rest parameter already holds the index — no signature change needed
+            r#"data-testid={"Rest.li" + (args[1] === void 0 ? "" : "-" + args[1])}"#,
+            r#"items.map((...args)=>"#,
+            r#"data-testid={"NamedThenRest.li" + (rest[0] === void 0 ? "" : "-" + rest[0])}"#,
+            r#"items.map((item, ...rest)=>"#,
+        ]);
+        let output =
+            std::fs::read_to_string("tests/fixture/map-uncertain-callees/output.tsx").unwrap();
+        assert!(
+            !output.contains("undefined"),
+            "every inferred segment must be guarded with `void 0`"
         );
     }
 

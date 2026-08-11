@@ -21,3 +21,9 @@ const WithArray = ({ items }: { items: string[] }) => (
 const Destructured = ({ items }: { items: string[] }) => (
   <ul>{items.map((item, [i]) => <li>{item}</li>)}</ul>
 );
+
+// A default on the *first* parameter still leaves the index slot free. A parameter with
+// no default may follow one that has a default — it only changes Function.length.
+const DefaultedItem = ({ items }: { items: string[] }) => (
+  <ul>{items.map((item = "?") => <li>{item}</li>)}</ul>
+);
