@@ -145,7 +145,9 @@ import "@testing-library/jest-dom/vitest";
 
 ### SWC Version Compatibility
 
-SWC plugins are compiled against a specific `swc_core` version and **must match** what your consumer uses. This plugin targets `swc_core 65.x`. Each SWC minor release may require a new plugin version.
+SWC plugins are compiled against a specific `swc_core` version, which must be compatible with the SWC your bundler uses. This plugin targets `swc_core 76.x`, verified against `@swc/core 1.15.47`.
+
+Starting with `@swc/core 1.15.0`, WASM plugins built with `swc_core >= 47` are ABI-compatible across `@swc/core` versions — so this build works with current Next.js, Vite (`@vitejs/plugin-react-swc`), and `@swc/jest`. That compatibility is partial rather than absolute, so a future SWC release may still require a new plugin version.
 
 Check compatibility before pinning a version: [plugins.swc.rs](https://plugins.swc.rs/)
 
@@ -270,9 +272,11 @@ export default () => (
 
 ## Configuration Options
 
-| Option       | Type       | Default           | Description                                 |
-| ------------ | ---------- | ----------------- | ------------------------------------------- |
-| `attributes` | `string[]` | `["data-testid"]` | Array of attribute names to add to elements |
+| Option        | Type       | Default           | Description                                              |
+| ------------- | ---------- | ----------------- | -------------------------------------------------------- |
+| `attributes`  | `string[]` | `["data-testid"]` | Array of attribute names to add to elements               |
+| `autoIndex`   | `boolean`  | `true`            | Append an index parameter to map callbacks that declare none, so each item gets a unique id |
+| `manifestDir` | `string`   | —                 | ❌ **Not supported** — fails the build, see [Limitations](#manifestdir-is-not-supported) |
 
 ### Examples
 
@@ -384,6 +388,94 @@ test("user card interactions", async ({ page }) => {
 | Existing Attributes    | ✅        | Never overrides existing `data-testid`                 |
 | Self-Closing Elements  | ✅        | `<img />`, `<input />`                                 |
 | Nested Components      | ✅        | Deep nesting with unique counters                      |
+| `.map()` with index    | ✅        | `items.map((it, i) => …)` → `{"Comp.li-" + i}`         |
+| `.map()` without index | ✅        | An index parameter is appended → `{"Comp.li-" + i}`    |
+| `.flatMap()`           | ✅        | Detected like `.map()`                                 |
+| `_.map(items, fn)`     | ✅        | Collection first, callback second — lodash, `Children.map`, `$.map` |
+| Nested `.map()`        | ✅        | One index per level → `{"Comp.td-" + r + "-" + c}`     |
+| `items.map(renderItem)`| ⚠️        | No function literal to add an index to — static id     |
+| `R.map(fn, items)`     | ⚠️        | Callback-first helpers get no index — see [Limitations](#iteration-forms-that-do-not-get-unique-ids) |
+
+---
+
+## Limitations
+
+### Iteration forms that do not get unique ids
+
+Elements rendered inside a map callback get a unique runtime id per item —
+`data-testid={"List.li-" + index}` → `List.li-0`, `List.li-1`, … This works whether or
+not the source declares an index parameter: if it does not, the plugin appends one.
+
+```jsx
+// all of these produce List.li-0, List.li-1, List.li-2
+{items.map((item, index) => <li key={index}>{item}</li>)}
+{items.map((item) => <li>{item}</li>)}          // → (item, __testidIdx0) => …
+{items.flatMap((item) => <li>{item}</li>)}      // flatMap passes an index too
+{_.map(items, (item) => <li>{item}</li>)}       // collection first, callback second
+{Children.map(children, (child) => <li>{child}</li>)}
+```
+
+Nested callbacks contribute one index segment each, so cells stay unique across rows:
+
+```jsx
+// Table.td-0-0, Table.td-0-1, Table.td-1-0, …
+{rows.map((cells) => <tr>{cells.map((cell) => <td>{cell}</td>)}</tr>)}
+```
+
+The remaining forms fall back to a **single static id shared by all items**, because the
+plugin assigns ids at compile time from one source node:
+
+```jsx
+// ⚠️ every <li> gets the identical id "List.li"
+{items.map(renderItem)}                         // callback is not a function literal
+{items.map((...args) => <li/>)}                 // nothing may follow a rest parameter
+{R.map((item) => <li/>, items)}                 // ramda: callback first, no index
+{items.pipe(map((item) => <li/>))}              // bare map(fn): curried / an operator
+{items.map((item) => <li/>, this)}              // a second argument makes the shape ambiguous
+```
+
+The last three are excluded deliberately: the plugin cannot tell that those callbacks
+are called with an index, and an appended parameter that the callee never fills would be
+`undefined` in every id. A `.map(cb, thisArg)` callback that *declares* an index still
+gets a unique id — the option only governs appending one.
+
+Duplicate testids are legal HTML but will break `getByTestId`-style queries that expect
+one match. To fix a static id, switch to a supported form or set the attribute yourself.
+
+Note that JSX appearing **outside** the callback — in the callee or a later argument —
+correctly keeps a static id, since the index variable does not exist in that scope:
+
+```jsx
+// <Header> → "List.Header" (static)   <li> → {"List.li-" + i} (dynamic)
+{[<Header key="h" />, ...items].map((item, i) => <li>{item}</li>)}
+```
+
+### The appended index parameter
+
+When a callback declares no index, the plugin appends one named `__testidIdx<n>`:
+
+```jsx
+{items.map((item) => <li>{item}</li>)}
+// becomes
+{items.map((item, __testidIdx0) => <li data-testid={"List.li-" + __testidIdx0}>{item}</li>)}
+```
+
+The name is generated per file and checked against every identifier in the callback, so
+it cannot shadow anything the body uses. It is only added when a testid actually
+references it — a callback that renders no JSX keeps its original signature. Set
+`autoIndex: false` to turn this off and keep static ids for callbacks with no index
+parameter (useful if you call a custom `map` whose callback receives no index).
+
+### `manifestDir` is not supported
+
+The `manifestDir` option cannot work and will **fail your build with an explanatory
+error**. SWC runs Wasm plugins inside a WASI sandbox with no preopened directories, so
+the plugin cannot write to any path on disk — this is a property of the SWC plugin
+runtime, not a misconfiguration. Remove the option to unblock your build.
+
+Making it work requires a redesign that does not use the filesystem (emitting testids
+through SWC's plugin metadata channel, or collecting them in a host-side post-pass).
+`scripts/merge-manifest.mjs` is retained for that future design.
 
 ---
 

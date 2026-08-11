@@ -59,7 +59,20 @@ echo ""
 
 NEW_VERSION=$(npm version "$BUMP" --no-git-tag-version)
 NEW_VERSION="${NEW_VERSION#v}"
-echo "▶ Version bumped: $CURRENT_VERSION → $NEW_VERSION"
+
+# Keep Cargo.toml's version in lockstep with package.json. Only the first `version =`
+# line is the package version; dependency pins appear later in the file.
+# Cargo.lock records the package version too, so refresh it or the commit below would
+# stage a Cargo.lock that disagrees with Cargo.toml.
+set_cargo_version() {
+  awk -v v="$1" '!done && /^version = / { sub(/"[^"]*"/, "\"" v "\""); done=1 } { print }' \
+    Cargo.toml > Cargo.toml.tmp && mv Cargo.toml.tmp Cargo.toml
+  cargo update -p swc_plugin_react_data_testid --offline >/dev/null 2>&1 \
+    || cargo update -p swc_plugin_react_data_testid >/dev/null 2>&1
+}
+set_cargo_version "$NEW_VERSION"
+
+echo "▶ Version bumped: $CURRENT_VERSION → $NEW_VERSION (package.json + Cargo.toml)"
 echo ""
 
 if [ "$DRY_RUN" = true ]; then
@@ -67,6 +80,7 @@ if [ "$DRY_RUN" = true ]; then
   echo "Would publish: swc-plugin-react-data-testid@$NEW_VERSION"
   # Restore the version bump
   npm version "$CURRENT_VERSION" --no-git-tag-version --allow-same-version &>/dev/null
+  set_cargo_version "$CURRENT_VERSION"
   exit 0
 fi
 
@@ -80,7 +94,7 @@ echo ""
 
 TAG="swc-v${NEW_VERSION}"
 
-git add package.json
+git add package.json Cargo.toml Cargo.lock
 git commit -m "chore: bump swc-plugin version to v${NEW_VERSION}"
 git tag -a "$TAG" -m "swc-plugin-react-data-testid v${NEW_VERSION}"
 

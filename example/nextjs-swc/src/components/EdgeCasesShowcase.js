@@ -83,7 +83,7 @@ function ShortCircuitDemo() {
 
 // ─── Map callback ─────────────────────────────────────────────────────────────
 // Arrow inside .map() is a call argument — current_component stays MapDemo.
-// All three <li> nodes in source are ONE source node → MapDemo.ul + MapDemo.li
+// The callback declares an index, so each <li> gets MapDemo.li-0 / -1 / -2.
 function MapDemo() {
   const fruits = ["Apple", "Banana", "Cherry"];
   return (
@@ -92,6 +92,61 @@ function MapDemo() {
         <li key={i}>{fruit}</li>
       ))}
     </ul>
+  );
+}
+
+// ─── Map callbacks without an index parameter ─────────────────────────────────
+// The plugin appends an index parameter, so ids stay unique per item even though
+// the source never declared one. These render for real during the prerender, which
+// is what proves the generated reference actually resolves at runtime (a dangling
+// reference would throw ReferenceError here, and only here — fixtures never execute).
+// Expected: NoIndexDemo.li-0 / -1 / -2
+function NoIndexDemo() {
+  const fruits = ["Apple", "Banana", "Cherry"];
+  return (
+    <ul>
+      {fruits.map((fruit) => (
+        <li>{fruit}</li>
+      ))}
+    </ul>
+  );
+}
+
+// flatMap is detected exactly like map. Expected: FlatMapDemo.li-0 / -1
+function FlatMapDemo() {
+  const groups = [["a", "b"], ["c"]];
+  return (
+    <ul>
+      {groups.flatMap((group) => (
+        <li>{group.join(", ")}</li>
+      ))}
+    </ul>
+  );
+}
+
+// Collection-first helpers pass the callback as the SECOND argument.
+// React.Children.map has the same shape as lodash's _.map(collection, cb).
+// Expected: ChildrenMapDemo.span-0 / -1
+function ChildrenMapDemo({ children }) {
+  return <div>{React.Children.map(children, (child) => <span>{child}</span>)}</div>;
+}
+
+// Nested callbacks: the id carries one index per level, so cells stay unique across
+// rows. Expected: NestedMapDemo.td-0-0 / -0-1 / -1-0 / -1-1
+function NestedMapDemo() {
+  const rows = [["r1c1", "r1c2"], ["r2c1", "r2c2"]];
+  return (
+    <table>
+      <tbody>
+        {rows.map((cells) => (
+          <tr>
+            {cells.map((cell) => (
+              <td>{cell}</td>
+            ))}
+          </tr>
+        ))}
+      </tbody>
+    </table>
   );
 }
 
@@ -190,8 +245,50 @@ export default function EdgeCasesShowcase() {
 
       <section>
         <h3>Map callback</h3>
-        <small>All three runtime &lt;li&gt; nodes share <code>MapDemo.li</code> — one source node</small>
+        <small>
+          The callback declares an index → <code>MapDemo.li-0</code> /{" "}
+          <code>-1</code> / <code>-2</code>
+        </small>
         <MapDemo />
+      </section>
+
+      <section>
+        <h3>Map callback without an index parameter</h3>
+        <small>
+          The plugin appends one → <code>NoIndexDemo.li-0</code> / <code>-1</code> /{" "}
+          <code>-2</code>, instead of one static id repeated three times
+        </small>
+        <NoIndexDemo />
+      </section>
+
+      <section>
+        <h3>flatMap</h3>
+        <small>
+          Detected like map → <code>FlatMapDemo.li-0</code> / <code>-1</code>
+        </small>
+        <FlatMapDemo />
+      </section>
+
+      <section>
+        <h3>Callback as the second argument</h3>
+        <small>
+          <code>React.Children.map(children, cb)</code> — same shape as lodash&apos;s{" "}
+          <code>_.map(collection, cb)</code> → <code>ChildrenMapDemo.span-0</code> /{" "}
+          <code>-1</code>
+        </small>
+        <ChildrenMapDemo>
+          <b>one</b>
+          <b>two</b>
+        </ChildrenMapDemo>
+      </section>
+
+      <section>
+        <h3>Nested map callbacks</h3>
+        <small>
+          One index segment per level → <code>NestedMapDemo.td-0-0</code>,{" "}
+          <code>-0-1</code>, <code>-1-0</code>, <code>-1-1</code>
+        </small>
+        <NestedMapDemo />
       </section>
 
       <section>

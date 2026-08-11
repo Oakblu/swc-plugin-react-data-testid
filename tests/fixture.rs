@@ -38,7 +38,7 @@ fn fixture_with_options(input: PathBuf) {
         &|_| {
             visit_mut_pass(ReactDataTestIdTransform::new(PluginOptions {
                 attributes: Some(vec!["data-testid".into(), "data-cy".into()]),
-                manifest_dir: None,
+                ..Default::default()
             }))
         },
         &input,
@@ -58,7 +58,7 @@ fn fixture_playwright(input: PathBuf) {
         &|_| {
             visit_mut_pass(ReactDataTestIdTransform::new(PluginOptions {
                 attributes: Some(vec!["data-test-id".into()]),
-                manifest_dir: None,
+                ..Default::default()
             }))
         },
         &input,
@@ -83,7 +83,7 @@ fn fixture_multi_attrs(input: PathBuf) {
                     "data-test-id".into(),
                     "data-pw".into(),
                 ]),
-                manifest_dir: None,
+                ..Default::default()
             }))
         },
         &input,
@@ -104,7 +104,28 @@ fn fixture_empty_attrs(input: PathBuf) {
         &|_| {
             visit_mut_pass(ReactDataTestIdTransform::new(PluginOptions {
                 attributes: Some(vec![]),
-                manifest_dir: None,
+                ..Default::default()
+            }))
+        },
+        &input,
+        &output,
+        Default::default(),
+    );
+}
+
+// autoIndex: false — no index parameter is appended to callbacks that declare none.
+#[testing::fixture("tests/fixture-no-auto-index/*/input.tsx")]
+fn fixture_no_auto_index(input: PathBuf) {
+    let output = input.with_file_name("output.tsx");
+    test_fixture(
+        Syntax::Typescript(TsSyntax {
+            tsx: true,
+            ..Default::default()
+        }),
+        &|_| {
+            visit_mut_pass(ReactDataTestIdTransform::new(PluginOptions {
+                auto_index: Some(false),
+                ..Default::default()
             }))
         },
         &input,
@@ -243,6 +264,91 @@ mod correctness {
             r#"data-testid="TableRows.tr""#,
             r#"data-testid="TableRows.td""#,
         ]);
+    }
+
+    #[test]
+    fn map_no_index_param() {
+        // callbacks that declare no index get one appended, so ids are unique per item
+        check("tests/fixture/map-no-index-param", true, &[
+            r#"(item, __testidIdx0)"#,
+            r#"data-testid={"List.li-" + __testidIdx0}"#,
+            // a parameterless callback gains a placeholder so the index stays 2nd
+            r#"(__testidItem2, __testidIdx1)"#,
+            r#"data-testid={"Stars.span-" + __testidIdx1}"#,
+            // destructured item parameter is preserved
+            r#"({ id }, __testidIdx3)"#,
+            r#"data-testid={"Rows.tr-" + __testidIdx3}"#,
+            // function expressions too
+            r#"function(item, __testidIdx4)"#,
+            r#"data-testid={"Legacy.li-" + __testidIdx4}"#,
+        ]);
+    }
+
+    #[test]
+    fn map_flatmap() {
+        // flatMap passes (item, index) exactly like map
+        check("tests/fixture/map-flatmap", true, &[
+            r#"data-testid={"Groups.li-" + i}"#,
+            r#"(group, __testidIdx0)"#,
+            r#"data-testid={"Tags.span-" + __testidIdx0}"#,
+        ]);
+    }
+
+    #[test]
+    fn map_lodash_style() {
+        // collection-first helpers: the callback is argument 1
+        check("tests/fixture/map-lodash-style", true, &[
+            r#"data-testid={"Lodash.li-" + i}"#,
+            r#"_.map(items, (item, __testidIdx0)"#,
+            r#"map(items, (item, __testidIdx1)"#,
+            r#"Children.map(children, (child, __testidIdx2)"#,
+        ]);
+    }
+
+    #[test]
+    fn map_nested() {
+        // one index segment per enclosing callback, or the inner index would repeat
+        // for every outer iteration
+        check("tests/fixture/map-nested", true, &[
+            r#"data-testid={"Table.tr-" + __testidIdx0}"#,
+            r#"data-testid={"Table.td-" + __testidIdx0 + "-" + __testidIdx1}"#,
+            r#"data-testid={"Mixed.section-" + groupIndex}"#,
+            r#"data-testid={"Mixed.p-" + groupIndex + "-" + __testidIdx2}"#,
+        ]);
+    }
+
+    #[test]
+    fn map_this_arg() {
+        // no parameter is appended next to a thisArg, but a declared index still counts
+        check("tests/fixture/map-this-arg", true, &[
+            r#"function(item, index)"#,
+            r#"data-testid={"List.li-" + index}"#,
+        ]);
+        let output = std::fs::read_to_string("tests/fixture/map-this-arg/output.tsx").unwrap();
+        assert!(
+            !output.contains("__testidIdx"),
+            "a thisArg argument must not gain an appended index parameter"
+        );
+    }
+
+    #[test]
+    fn map_no_inject_cases() {
+        // shapes where a callback is NOT called with an index, or cannot take one
+        check("tests/fixture/map-no-inject-cases", false, &[
+            r#"R.map((item)=><li data-testid="Ramda.li">"#, // ramda: fn first, no index
+            r#"map((item)=><li data-testid="Curried.li">"#, // bare map(fn): curried
+            r#"items.map(renderItem)"#,                     // no parameter list to extend
+            r#"items.map((...args)=>"#,                     // nothing may follow ...rest
+            r#".map((item)=>item.trim())"#,                 // no JSX → signature untouched
+            r#"items.map((item)=><li data-testid="custom">"#, // attr already present
+            r#"return <li data-testid="ThisArg.li">"#,      // .map(cb, thisArg): ambiguous
+        ]);
+        let output =
+            std::fs::read_to_string("tests/fixture/map-no-inject-cases/output.tsx").unwrap();
+        assert!(
+            !output.contains("__testidIdx"),
+            "no index parameter may be appended in any of these shapes"
+        );
     }
 
     #[test]

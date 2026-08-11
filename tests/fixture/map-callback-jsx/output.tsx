@@ -2,7 +2,7 @@
 // The plugin does not open a new component scope; current_component stays the enclosing component.
 // When the callback declares an index parameter, the testid becomes dynamic:
 //   data-testid={"List.li-" + index}  (unique per item at runtime)
-// Without an index parameter, the testid would be the static "List.li" for every item.
+// A callback that declares no index gets one appended — see map-no-index-param.
 const List = ({ items }: {
     items: string[];
 })=><ul data-testid="List.ul">

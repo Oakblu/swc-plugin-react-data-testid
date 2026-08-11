@@ -56,6 +56,56 @@ function MapDemo() {
   );
 }
 
+// ── Map callbacks with no index parameter ──────────────────────────────────────
+// The source never declares an index; the plugin appends one so each item still
+// gets a unique id.
+function NoIndexDemo() {
+  const fruits = ["Apple", "Banana", "Cherry"];
+  return (
+    <ul>
+      {fruits.map((fruit) => (
+        <li>{fruit}</li>
+      ))}
+    </ul>
+  );
+}
+
+function FlatMapDemo() {
+  const groups = [["a", "b"], ["c"]];
+  return (
+    <ul>
+      {groups.flatMap((group) => (
+        <li>{group.join(", ")}</li>
+      ))}
+    </ul>
+  );
+}
+
+// Collection first, callback second — the shape lodash's _.map(collection, cb) uses.
+function ChildrenMapDemo({ children }) {
+  return <div>{React.Children.map(children, (child) => <span>{child}</span>)}</div>;
+}
+
+function NestedMapDemo() {
+  const rows = [
+    ["r1c1", "r1c2"],
+    ["r2c1", "r2c2"],
+  ];
+  return (
+    <table>
+      <tbody>
+        {rows.map((cells) => (
+          <tr>
+            {cells.map((cell) => (
+              <td>{cell}</td>
+            ))}
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  );
+}
+
 // ── Nested component scope ─────────────────────────────────────────────────────
 function NestedDemo() {
   const Inner = () => <span>inner badge</span>;
@@ -127,13 +177,60 @@ describe("EdgeCases — many identical elements", () => {
   });
 });
 
-describe("EdgeCases — map callback shares component counter", () => {
-  it("all runtime <li> nodes share the same source-level testid", () => {
+describe("EdgeCases — map callback with index param gets dynamic testids", () => {
+  it("each runtime <li> node gets a unique index-suffixed testid", () => {
     const { container } = render(<MapDemo />);
 
-    // Three runtime nodes, but all share the same single source node → same testid
-    const items = container.querySelectorAll('[data-testid="MapDemo.li"]');
+    // The .map() callback declares an index param, so the plugin emits a dynamic
+    // expression — data-testid={"MapDemo.li-" + i} — giving each item a unique id.
+    expect(container.querySelector('[data-testid="MapDemo.li-0"]')).toBeInTheDocument();
+    expect(container.querySelector('[data-testid="MapDemo.li-1"]')).toBeInTheDocument();
+    expect(container.querySelector('[data-testid="MapDemo.li-2"]')).toBeInTheDocument();
+
+    const items = container.querySelectorAll('[data-testid^="MapDemo.li-"]');
     expect(items).toHaveLength(3);
+  });
+});
+
+describe("EdgeCases — map callbacks without an index parameter", () => {
+  it("appends an index so every item gets a unique id", () => {
+    const { container } = render(<NoIndexDemo />);
+
+    expect(container.querySelector('[data-testid="NoIndexDemo.li-0"]')).toBeInTheDocument();
+    expect(container.querySelector('[data-testid="NoIndexDemo.li-1"]')).toBeInTheDocument();
+    expect(container.querySelector('[data-testid="NoIndexDemo.li-2"]')).toBeInTheDocument();
+    expect(container.querySelectorAll('[data-testid^="NoIndexDemo.li-"]')).toHaveLength(3);
+  });
+
+  it("detects flatMap", () => {
+    const { container } = render(<FlatMapDemo />);
+
+    expect(container.querySelector('[data-testid="FlatMapDemo.li-0"]')).toBeInTheDocument();
+    expect(container.querySelector('[data-testid="FlatMapDemo.li-1"]')).toBeInTheDocument();
+  });
+
+  it("detects a callback passed as the second argument", () => {
+    const { container } = render(
+      <ChildrenMapDemo>
+        <b>one</b>
+        <b>two</b>
+      </ChildrenMapDemo>
+    );
+
+    expect(container.querySelector('[data-testid="ChildrenMapDemo.span-0"]')).toBeInTheDocument();
+    expect(container.querySelector('[data-testid="ChildrenMapDemo.span-1"]')).toBeInTheDocument();
+  });
+
+  it("keeps ids unique across nested callbacks", () => {
+    const { container } = render(<NestedMapDemo />);
+
+    // One index segment per level — an inner index alone would repeat per row.
+    for (const id of ["td-0-0", "td-0-1", "td-1-0", "td-1-1"]) {
+      expect(
+        container.querySelector(`[data-testid="NestedMapDemo.${id}"]`)
+      ).toBeInTheDocument();
+    }
+    expect(container.querySelectorAll('[data-testid^="NestedMapDemo.td-"]')).toHaveLength(4);
   });
 });
 
