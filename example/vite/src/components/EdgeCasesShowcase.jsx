@@ -83,7 +83,7 @@ function ShortCircuitDemo() {
 
 // ─── Map callback ─────────────────────────────────────────────────────────────
 // Arrow inside .map() is a call argument — current_component stays MapDemo.
-// All three <li> nodes in source are ONE source node → MapDemo.ul + MapDemo.li
+// The declared index is used directly: MapDemo.ul + MapDemo.li-0 / -1 / -2
 function MapDemo() {
   const fruits = ["Apple", "Banana", "Cherry"];
   return (
@@ -93,6 +93,59 @@ function MapDemo() {
       ))}
     </ul>
   );
+}
+
+// ─── Iteration forms with no declared index ───────────────────────────────────
+// None of these name an index, yet each element still gets a unique id.
+// Expected: NoIndexDemo.li-0 / -1 / -2
+function NoIndexDemo() {
+  const fruits = ["Apple", "Banana", "Cherry"];
+  return (
+    <ul>
+      {fruits.map((fruit) => (
+        <li>{fruit}</li>
+      ))}
+    </ul>
+  );
+}
+
+// Expected: RestDemo.li-0 / -1 — read from args[1], signature untouched.
+function RestDemo() {
+  const fruits = ["Apple", "Banana"];
+  return (
+    <ul>
+      {fruits.map((...args) => (
+        <li>{args[0]}</li>
+      ))}
+    </ul>
+  );
+}
+
+// Expected: NestedMapDemo.td-0-0 / -0-1 / -1-0 / -1-1 — one segment per level.
+function NestedMapDemo() {
+  const rows = [["r1c1", "r1c2"], ["r2c1", "r2c2"]];
+  return (
+    <table>
+      <tbody>
+        {rows.map((cells) => (
+          <tr>
+            {cells.map((cell) => (
+              <td>{cell}</td>
+            ))}
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  );
+}
+
+// A helper of your own named `map` that never passes an index. The inferred segment is
+// guarded, so the id degrades to the static CustomMapDemo.li — never "-undefined".
+const map = (list, fn) => list.map((value) => fn(value));
+
+function CustomMapDemo() {
+  const fruits = ["Apple", "Banana"];
+  return <ul>{map(fruits, (fruit) => <li>{fruit}</li>)}</ul>;
 }
 
 // ─── Counter isolation ────────────────────────────────────────────────────────
@@ -190,8 +243,47 @@ export default function EdgeCasesShowcase() {
 
       <section>
         <h3>Map callback</h3>
-        <small>All three runtime &lt;li&gt; nodes share <code>MapDemo.li</code> — one source node</small>
+        <small>
+          The declared index is used as-is → <code>MapDemo.li-0</code>,{" "}
+          <code>-1</code>, <code>-2</code>
+        </small>
         <MapDemo />
+      </section>
+
+      <section>
+        <h3>No index declared</h3>
+        <small>
+          A parameter is appended, so each item is still unique →{" "}
+          <code>NoIndexDemo.li-0</code>, <code>-1</code>, <code>-2</code>
+        </small>
+        <NoIndexDemo />
+      </section>
+
+      <section>
+        <h3>Rest parameter</h3>
+        <small>
+          The index is already collected — the id reads <code>args[1]</code> and the
+          callback signature is left alone → <code>RestDemo.li-0</code>, <code>-1</code>
+        </small>
+        <RestDemo />
+      </section>
+
+      <section>
+        <h3>Nested map callbacks</h3>
+        <small>
+          One index segment per level → <code>NestedMapDemo.td-0-0</code>,{" "}
+          <code>-0-1</code>, <code>-1-0</code>, <code>-1-1</code>
+        </small>
+        <NestedMapDemo />
+      </section>
+
+      <section>
+        <h3>A custom map that passes no index</h3>
+        <small>
+          The inferred segment is guarded, so the id degrades to{" "}
+          <code>CustomMapDemo.li</code> rather than rendering <code>-undefined</code>
+        </small>
+        <CustomMapDemo />
       </section>
 
       <section>

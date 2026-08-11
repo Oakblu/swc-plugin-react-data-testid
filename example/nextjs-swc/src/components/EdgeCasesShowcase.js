@@ -150,6 +150,16 @@ function NestedMapDemo() {
   );
 }
 
+// A helper of your own named `map` matches the collection-first shape, so an index is
+// appended — but this one never passes it. The guarded segment drops out and the id
+// stays static. Expected: CustomMapDemo.li on both items, never "-undefined".
+const map = (list, fn) => list.map((value) => fn(value));
+
+function CustomMapDemo() {
+  const items = ["x", "y"];
+  return <ul>{map(items, (item) => <li>{item}</li>)}</ul>;
+}
+
 // ─── Counter isolation ────────────────────────────────────────────────────────
 // Expected: IsoAlpha.div + IsoAlpha.button, then IsoBeta.div + IsoBeta.button
 // (NOT IsoAlpha.div2 or IsoAlpha.button2)
@@ -289,6 +299,15 @@ export default function EdgeCasesShowcase() {
           <code>-0-1</code>, <code>-1-0</code>, <code>-1-1</code>
         </small>
         <NestedMapDemo />
+      </section>
+
+      <section>
+        <h3>A custom map that passes no index</h3>
+        <small>
+          The appended index is never filled, so the guarded segment drops out and the id
+          degrades to <code>CustomMapDemo.li</code> — never <code>-undefined</code>.
+        </small>
+        <CustomMapDemo />
       </section>
 
       <section>

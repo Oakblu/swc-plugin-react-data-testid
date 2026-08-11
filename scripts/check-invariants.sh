@@ -48,11 +48,13 @@ fi
 # `let _ = <fs/io call>` hides failures from users. The plugin runs in a WASI sandbox
 # where filesystem calls always fail, so swallowing them produces silent no-ops.
 # Matches both `std::fs::…` and the aliased `fs::…` form (after `use std::fs;`).
-SWALLOWED=$(grep -nE 'let _ = (std::)?fs::' src/lib.rs || true)
+# `serde_json::from_str(..).ok()` is the same failure in config form: deserialization is
+# all-or-nothing, so one mistyped option discards every option the user set, silently.
+SWALLOWED=$(grep -nE 'let _ = (std::)?fs::|from_str\([^)]*\)\.ok\(\)' src/lib.rs || true)
 if [ -z "$SWALLOWED" ]; then
-  pass "no swallowed std::fs results in src/lib.rs"
+  pass "no swallowed fs or config-parse results in src/lib.rs"
 else
-  fail "swallowed fs errors: $SWALLOWED" \
+  fail "swallowed errors: $SWALLOWED" \
        "handle the Result and call report_error() so users see the failure"
 fi
 

@@ -106,6 +106,16 @@ function NestedMapDemo() {
   );
 }
 
+// A helper of your own named `map` matches the collection-first shape, so the plugin
+// appends an index — but this one never passes it. The guarded segment must drop out,
+// leaving the plain static id rather than "CustomMapDemo.li-undefined".
+const map = (list, fn) => list.map((value) => fn(value));
+
+function CustomMapDemo() {
+  const items = ["x", "y"];
+  return <ul>{map(items, (item) => <li>{item}</li>)}</ul>;
+}
+
 // ── Nested component scope ─────────────────────────────────────────────────────
 function NestedDemo() {
   const Inner = () => <span>inner badge</span>;
@@ -231,6 +241,18 @@ describe("EdgeCases — map callbacks without an index parameter", () => {
       ).toBeInTheDocument();
     }
     expect(container.querySelectorAll('[data-testid^="NestedMapDemo.td-"]')).toHaveLength(4);
+  });
+
+  it("degrades to the static id when the callee does not pass an index", () => {
+    const { container } = render(<CustomMapDemo />);
+
+    const items = container.querySelectorAll("li");
+    expect(items).toHaveLength(2);
+    // The appended parameter is never filled, so the guard drops the segment entirely.
+    for (const li of items) {
+      expect(li.getAttribute("data-testid")).toBe("CustomMapDemo.li");
+    }
+    expect(container.innerHTML).not.toContain("undefined");
   });
 });
 

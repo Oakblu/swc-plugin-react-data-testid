@@ -272,11 +272,34 @@ export default () => (
 
 ## Configuration Options
 
-| Option        | Type       | Default           | Description                                              |
-| ------------- | ---------- | ----------------- | -------------------------------------------------------- |
-| `attributes`  | `string[]` | `["data-testid"]` | Array of attribute names to add to elements               |
-| `autoIndex`   | `boolean`  | `true`            | Append an index parameter to map callbacks that declare none, so each item gets a unique id |
-| `manifestDir` | `string`   | —                 | ❌ **Not supported** — fails the build, see [Limitations](#manifestdir-is-not-supported) |
+Every option defaults to the behaviour that produces the most unique ids. **You should not
+need to configure anything** — the flags exist to turn inference *off*, for a codebase
+migrating in stages or a callee the heuristics read wrongly.
+
+| Option               | Type       | Default              | Description                                              |
+| -------------------- | ---------- | -------------------- | -------------------------------------------------------- |
+| `attributes`         | `string[]` | `["data-testid"]`    | Attribute names to add to elements                        |
+| `autoIndex`          | `boolean`  | `true`               | Append an index parameter to map callbacks that declare none, so each item gets a unique id |
+| `mapMethods`         | `string[]` | `["map", "flatMap"]` | Callee names treated as iteration. Narrow it to leave a name alone, or widen it to add your own iterator |
+| `collectionFirstMap` | `boolean`  | `true`               | Recognise `f(collection, callback)` — `_.map`, `Children.map`, `$.map` |
+| `nestedIndexes`      | `boolean`  | `true`               | Give an element inside nested callbacks one id segment per level. Turning this off makes nested ids collide across outer iterations |
+| `manifestDir`        | `string`   | —                    | ❌ **Not supported** — fails the build, see [Limitations](#manifestdir-is-not-supported) |
+
+If the plugin config cannot be read — most often a value of the wrong type, like
+`"autoIndex": "false"` with quotes — **the build fails with an explanatory error**.
+Deserialization is all-or-nothing, so one mistyped field would otherwise discard every
+other option you set and leave the plugin looking as though it had accepted them.
+
+Setting all four to their non-default values reproduces the 0.1.x id scheme exactly:
+
+```json
+{
+  "autoIndex": false,
+  "collectionFirstMap": false,
+  "nestedIndexes": false,
+  "mapMethods": ["map"]
+}
+```
 
 ### Examples
 
@@ -390,11 +413,16 @@ test("user card interactions", async ({ page }) => {
 | Nested Components      | ✅        | Deep nesting with unique counters                      |
 | `.map()` with index    | ✅        | `items.map((it, i) => …)` → `{"Comp.li-" + i}`         |
 | `.map()` without index | ✅        | An index parameter is appended → `{"Comp.li-" + i}`    |
+| `.map()` with a rest param | ✅    | Reads `args[1]` — the signature is left untouched      |
 | `.flatMap()`           | ✅        | Detected like `.map()`                                 |
 | `_.map(items, fn)`     | ✅        | Collection first, callback second — lodash, `Children.map`, `$.map` |
+| `.map(fn, thisArg)`    | ✅        | Still `Array.prototype.map`, so the index is real      |
+| RxJS `map(fn)`         | ✅        | The operator passes `(value, index)`                   |
 | Nested `.map()`        | ✅        | One index per level → `{"Comp.td-" + r + "-" + c}`     |
-| `items.map(renderItem)`| ⚠️        | No function literal to add an index to — static id     |
-| `R.map(fn, items)`     | ⚠️        | Callback-first helpers get no index — see [Limitations](#iteration-forms-that-do-not-get-unique-ids) |
+| `R.map(fn, items)`     | ⚠️        | Inferred, but ramda passes no index → degrades to a static id, never `-undefined` |
+| `items.map(renderItem)`| ⚠️        | No function literal to read an index from — static id  |
+| `items.map((it, [i]) => …)` | ⚠️   | The index slot is destructured — nothing to reference   |
+| Two instances of a component | ⚠️  | Ids are per component, not per instance — see [Limitations](#ids-are-per-component-not-per-instance) |
 
 ---
 
@@ -403,16 +431,22 @@ test("user card interactions", async ({ page }) => {
 ### Iteration forms that do not get unique ids
 
 Elements rendered inside a map callback get a unique runtime id per item —
-`data-testid={"List.li-" + index}` → `List.li-0`, `List.li-1`, … This works whether or
-not the source declares an index parameter: if it does not, the plugin appends one.
+`data-testid={"List.li-" + index}` → `List.li-0`, `List.li-1`, … The plugin infers the
+index from whatever is available, in order of confidence, and **no configuration is
+needed for any of this**:
 
 ```jsx
 // all of these produce List.li-0, List.li-1, List.li-2
-{items.map((item, index) => <li key={index}>{item}</li>)}
-{items.map((item) => <li>{item}</li>)}          // → (item, __testidIdx0) => …
+{items.map((item, index) => <li>{item}</li>)}   // declared — used as-is
+{items.map((item, index = 0) => <li>{item}</li>)}  // a default is unwrapped
+{items.map((...args) => <li>{args[0]}</li>)}    // read from args[1], signature untouched
+{items.map((item) => <li>{item}</li>)}          // appended → (item, __testidIdx0) => …
 {items.flatMap((item) => <li>{item}</li>)}      // flatMap passes an index too
 {_.map(items, (item) => <li>{item}</li>)}       // collection first, callback second
 {Children.map(children, (child) => <li>{child}</li>)}
+{$.map(items, (item) => <li>{item}</li>)}
+{items.map((item) => <li>{item}</li>, this)}    // .map(cb, thisArg) is still Array.map
+{items.pipe(map((item) => <li>{item}</li>)))}   // RxJS operator: passes (value, index)
 ```
 
 Nested callbacks contribute one index segment each, so cells stay unique across rows:
@@ -422,25 +456,25 @@ Nested callbacks contribute one index segment each, so cells stay unique across 
 {rows.map((cells) => <tr>{cells.map((cell) => <td>{cell}</td>)}</tr>)}
 ```
 
-The remaining forms fall back to a **single static id shared by all items**, because the
-plugin assigns ids at compile time from one source node:
+**Where the callee turns out not to pass an index**, the segment drops out and the id is
+the plain static `List.li` — never `List.li-undefined`. That covers curried ramda,
+lodash-fp, `R.map(fn, list)`, and any helper of your own named `map`:
+
+```jsx
+{R.map((item) => <li/>, items)}                 // → "List.li" on every item
+```
+
+Only these forms have nothing the plugin can work with at all:
 
 ```jsx
 // ⚠️ every <li> gets the identical id "List.li"
-{items.map(renderItem)}                         // callback is not a function literal
-{items.map((...args) => <li/>)}                 // nothing may follow a rest parameter
-{R.map((item) => <li/>, items)}                 // ramda: callback first, no index
-{items.pipe(map((item) => <li/>))}              // bare map(fn): curried / an operator
-{items.map((item) => <li/>, this)}              // a second argument makes the shape ambiguous
+{items.map(renderItem)}          // no callback body here — renderItem gets its own ids
+{items.map((item, [i]) => <li/>)} // the index slot is destructured: nothing to reference
 ```
 
-The last three are excluded deliberately: the plugin cannot tell that those callbacks
-are called with an index, and an appended parameter that the callee never fills would be
-`undefined` in every id. A `.map(cb, thisArg)` callback that *declares* an index still
-gets a unique id — the option only governs appending one.
-
 Duplicate testids are legal HTML but will break `getByTestId`-style queries that expect
-one match. To fix a static id, switch to a supported form or set the attribute yourself.
+one match. To fix a static id, switch to a supported form or set the attribute yourself —
+the plugin never overwrites one that is already present.
 
 Note that JSX appearing **outside** the callback — in the callee or a later argument —
 correctly keeps a static id, since the index variable does not exist in that scope:
@@ -450,6 +484,28 @@ correctly keeps a static id, since the index variable does not exist in that sco
 {[<Header key="h" />, ...items].map((item, i) => <li>{item}</li>)}
 ```
 
+### Ids are per component, not per instance
+
+The counter resets for each component, so a component rendered more than once repeats its
+ids:
+
+```jsx
+<Badge /> <Badge />   // both render <span data-testid="Badge.span">
+```
+
+The map index only disambiguates the element *at* the call site, not the elements inside
+the component:
+
+```jsx
+{items.map((item) => <Badge />)}
+// <Badge> itself → "List.Badge-0", "List.Badge-1"  ✅
+// the <span> inside Badge → "Badge.span" on both   ⚠️
+```
+
+This is inherent to assigning ids at compile time from one source node: the plugin cannot
+know how many times a component will be rendered. If you need to tell instances apart,
+pass the id in as a prop and set it explicitly on the element.
+
 ### The appended index parameter
 
 When a callback declares no index, the plugin appends one named `__testidIdx<n>`:
@@ -457,14 +513,76 @@ When a callback declares no index, the plugin appends one named `__testidIdx<n>`
 ```jsx
 {items.map((item) => <li>{item}</li>)}
 // becomes
-{items.map((item, __testidIdx0) => <li data-testid={"List.li-" + __testidIdx0}>{item}</li>)}
+{items.map((item, __testidIdx0) => (
+  <li data-testid={"List.li" + (__testidIdx0 === void 0 ? "" : "-" + __testidIdx0)}>{item}</li>
+))}
 ```
 
 The name is generated per file and checked against every identifier in the callback, so
 it cannot shadow anything the body uses. It is only added when a testid actually
-references it — a callback that renders no JSX keeps its original signature. Set
-`autoIndex: false` to turn this off and keep static ids for callbacks with no index
-parameter (useful if you call a custom `map` whose callback receives no index).
+references it — a callback that renders no JSX keeps its original signature.
+
+**Why the guard.** Whether the function you called really passes an index is a static
+guess — `map(fn)` is RxJS's operator (which does) and curried ramda (which does not),
+with identical syntax. The guard is what makes guessing *broadly* safe: if an index
+arrives the id is `List.li-0`, identical to writing the index yourself, and if it does not
+the segment drops out to exactly the static `List.li`. A wrong guess can never produce
+`List.li-undefined`, which is why the plugin infers everywhere it plausibly can rather
+than only where it is certain. This matters for a helper of your own named `map`:
+
+```jsx
+const map = (list, fn) => list.map((v) => fn(v));   // never passes an index
+{map(items, (item) => <li>{item}</li>)}             // → "List.li" for every item
+```
+
+The test is `=== void 0` rather than a truthiness check, because index `0` is falsy and
+`_.map(someObject, cb)` passes a string key rather than a number. An index **you** write
+is never guarded — declaring `(item, index) =>` asserts the binding is real, so the id
+stays the compact `{"List.li-" + index}`. A default value is unwrapped, so
+`(item, index = 0) =>` works the same way.
+
+Generated names are deterministic for a given file: the counter increments in traversal
+order, so the same source always yields the same names. They are not stable *across*
+edits — adding a map callback earlier in the file renumbers the ones after it. If you
+snapshot-test transpiled output rather than rendered DOM, expect churn there; snapshots
+of rendered markup only ever see the resulting `data-testid` values.
+
+One side effect to be aware of: appending a parameter changes the callback's
+`Function.length`, so a callee that branches on callback arity sees a different value.
+Array methods, lodash and `React.Children.map` do not, but if you pass callbacks to
+something that does, set `autoIndex: false`.
+
+Set `autoIndex: false` to turn appending off entirely and keep static ids for callbacks
+that declare no index.
+
+### Upgrading from 0.1.x
+
+0.2.0 changes ids that were previously duplicated. Selectors that target those elements
+need updating:
+
+| Source | 0.1.x | 0.2.0 |
+| ------ | ----- | ----- |
+| `items.map((item) => <li/>)` | `List.li` on every item | `List.li-0`, `List.li-1`, … |
+| `items.flatMap((item, i) => <li/>)` | `List.li` on every item | `List.li-0`, `List.li-1`, … |
+| `_.map(items, (item, i) => <li/>)` | `List.li` on every item | `List.li-0`, `List.li-1`, … |
+| `rows.map((r, i) => <tr>{r.map((c, j) => <td/>)}</tr>)` | `Table.td-0`, repeated per row | `Table.td-0-0`, `Table.td-0-1`, … |
+
+Ids that were already unique are unchanged.
+
+Each row has its own opt-out, so a large codebase can migrate in stages rather than all at
+once:
+
+| Row | Opt-out |
+| --- | ------- |
+| 1 | `autoIndex: false` |
+| 2 | `mapMethods: ["map"]` |
+| 3 | `collectionFirstMap: false` |
+| 4 | `nestedIndexes: false` |
+
+Set all four and the ids are exactly 0.1.x's. Each one you leave at its default is a set of
+elements that get unique ids instead of duplicates, so treat them as temporary. To pin an
+individual id permanently, set the attribute explicitly on the element — the plugin never
+overwrites one that is already present.
 
 ### `manifestDir` is not supported
 

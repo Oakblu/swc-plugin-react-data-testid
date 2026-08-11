@@ -36,7 +36,7 @@ caught by `cargo test`.
 | - | ---- | ------------- | -------- |
 | 1 | `Cargo.toml` version must equal `package.json` version | They drifted to 0.1.0 vs 0.1.3 because `release.sh` only bumped `package.json` | `--fix` |
 | 2 | No untracked files under `tests/` | A regression fixture was left untracked and would not have protected anyone | `--fix` |
-| 3 | No `let _ = std::fs::…` in `src/lib.rs` | Swallowed I/O errors turned a broken feature into a silent no-op for users | manual |
+| 3 | No `let _ = std::fs::…` and no `.ok()` on config parsing in `src/lib.rs` | Swallowed errors turn a broken feature into a silent no-op. `serde` deserialization is all-or-nothing, so one mistyped option silently discarded *every* option until this was reported | manual |
 | 4 | `plugin.wasm` must be newer than `src/lib.rs` and `Cargo.toml` | Examples silently tested a stale binary, so a fix appeared not to work | `--fix` |
 | 5 | Every `tests/**/input.tsx` has a sibling `output.tsx` | `#[testing::fixture]` expands its glob at **compile** time, so a fixture added without touching `tests/fixture.rs` is never run and the suite still reports all green | `--fix` |
 | 6 | `wasm32-wasip1` target installed | Without it the WASM link step cannot run at all | manual (`rustup target add`) |
@@ -77,17 +77,34 @@ by that.
 11. **Do not publish or commit without an explicit request.** Prepare the release
     (version bump, build, `npm pack --dry-run`) and hand over the publish command.
 
-12. **A parameter may only be appended to a callback the callee really calls with an
-    index.** `items.map(cb)` / `_.map(items, cb)` do; `R.map(cb, items)` and a bare
-    `map(cb)` (curried ramda / lodash-fp / an RxJS operator) do not — appending there
-    yields `"-undefined"` in every id. Any new call shape added to `map_call_site` needs
-    a fixture in `tests/fixture/map-no-inject-cases/` proving what is *not* touched.
+12. **Infer an index wherever one plausibly exists; never require configuration to get
+    unique ids.** Detection is deliberately broad — any callee named in `mapMethods` with
+    a callback literal in argument 0 or 1 — because the syntax cannot distinguish callees
+    that pass an index from ones that do not (`map(fn)` is both RxJS and curried ramda).
+    Narrowing detection guarantees duplicate ids for everything it excludes, while
+    guessing wrongly costs nothing once the segment is guarded (rule 14). Prefer an index
+    already in scope over an appended one: declared parameter → rest element (`args[1]`,
+    no signature change) → appended parameter. Options may only ever *remove* inference;
+    a default that has to be switched on is a bug. New shapes need a fixture in
+    `tests/fixture/map-uncertain-callees/` (inferred + guarded) or
+    `tests/fixture/map-no-inject-cases/` (nothing to work with).
 
 13. **Every generated binding name must be collision-checked against the callback it is
     inserted into** (`fresh_ident`), and carry the parameter scope's `SyntaxContext`.
     A name that already appears in the body would shadow it; the per-file counter is
     what keeps nested callbacks from generating the same name twice, since scanning an
     inner callback cannot yet see an outer generated name.
+
+14. **Any index the plugin inferred must be emitted guarded; a declared one must not be.**
+    `{"List.li" + (i === void 0 ? "" : "-" + i)}` degrades to the plain static id when the
+    callee turns out not to pass an index. This guard is what licenses the broad detection
+    in rule 12 — without it, every widening would risk `List.li-undefined` on every item.
+    Guard appended parameters *and* rest-element reads (`args[1]` may not exist). Compare
+    with `=== void 0`, never a truthiness or numeric test: index `0` is falsy, and
+    `_.map(object, cb)` passes a string key — both verified against real lodash in
+    `example/vitest/src/__tests__/MapHosts.test.jsx`. Indices the source declares stay
+    unguarded: writing `(item, i) =>` asserts the binding, and guarding it would bloat the
+    common output for nothing.
 
 ## Architecture
 
@@ -111,11 +128,15 @@ across every item, so its attribute becomes an expression instead:
 `data-testid={"List.li-" + index}`.
 
 - `map_call_site` recognises which argument holds the callback (`items.map(cb)` → arg 0;
-  `_.map(items, cb)`, `Children.map(children, cb)` → arg 1) and whether appending an
-  index parameter is safe there (rule 12).
-- If the callback declares no index, `fresh_ident` generates one (rule 13) and it is
-  appended **only if a testid actually referenced it**, so callbacks without JSX keep
-  their signature.
+  `_.map(items, cb)` → arg 1) for any callee named in `mapMethods`. It does *not* try to
+  decide whether that callee passes an index — it cannot (rule 12).
+- `IndexSource` ranks where the index comes from: `Declared` (a named parameter, trusted
+  and unguarded), `RestElement` (`args[1]` / `rest[0]` — no signature change), then
+  `Appended` (`fresh_ident`, rule 13, written back **only if a testid referenced it**, so
+  callbacks without JSX keep their signature). The last two are guarded (rule 14).
+- `declared_index_ident` accepts any second parameter that binds one identifier,
+  unwrapping a default (`(item, index = 0) =>`). A destructuring pattern binds no single
+  identifier to reference, so it falls back to a static id.
 - `map_indices` is a stack: an element inside nested callbacks gets one segment per
   level (`{"Table.td-" + r + "-" + c}`), otherwise the inner index would repeat for
   every outer iteration. The stack is only active while visiting the callback argument,

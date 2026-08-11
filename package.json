@@ -8,7 +8,8 @@
   "main": "plugin.wasm",
   "files": [
     "plugin.wasm",
-    "scripts/merge-manifest.mjs"
+    "scripts/merge-manifest.mjs",
+    "CHANGELOG.md"
   ],
   "bin": {
     "testid-merge-manifest": "scripts/merge-manifest.mjs"

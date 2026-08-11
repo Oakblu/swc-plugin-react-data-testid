@@ -13,8 +13,8 @@ use swc_core::{
 
 const DEFAULT_ATTRIBUTE: &str = "data-testid";
 
-// Iteration helpers whose callback is invoked with (item, index). Covers
-// Array.prototype.map/flatMap, lodash `_.map`, React.Children.map, jQuery.map.
+// Callee names treated as iteration by default. Covers Array.prototype.map/flatMap,
+// lodash `_.map`, React.Children.map, jQuery.map. Override with the `mapMethods` option.
 const MAP_METHODS: [&str; 2] = ["map", "flatMap"];
 
 // Base names for parameters the plugin appends to a callback. Collisions are avoided
@@ -49,23 +49,68 @@ pub struct PluginOptions {
     // iteration gets a distinct testid. Defaults to true. Set false to opt out (e.g. a
     // custom `map` whose callback is not called with an index).
     pub auto_index: Option<bool>,
+    // Callee names treated as iteration. Defaults to ["map", "flatMap"]. Narrow it to
+    // ["map"] to leave flatMap callbacks alone; widen it to add your own iterator.
+    pub map_methods: Option<Vec<String>>,
+    // Recognise the collection-first form `f(collection, callback)` — `_.map`,
+    // `React.Children.map`, `$.map`. Defaults to true.
+    pub collection_first_map: Option<bool>,
+    // Give an element inside nested callbacks one id segment per level. Defaults to
+    // true. Set false for the pre-0.2.0 innermost-only id, which repeats across outer
+    // iterations — it makes ids collide, so it exists only for staged migration.
+    pub nested_indexes: Option<bool>,
 }
 
-// One enclosing map-like callback's index binding. These stack, so an element inside
-// nested callbacks gets one index segment per level.
+// How this level's index is reached from inside the callback.
+enum IndexSource {
+    // A parameter the source declares: `(item, i) => …`. Always bound, so the id needs
+    // no guard, and the compact `{"List.li-" + i}` form is used.
+    Declared(Ident),
+    // An element of a rest parameter: `(...args) => …` reads `args[1]`. No signature
+    // change is needed, but the element may be absent, so the segment is guarded.
+    RestElement { rest: Ident, position: f64 },
+    // A parameter the plugin appends, written back only if a testid referenced it.
+    Appended(Ident),
+}
+
+// One enclosing map-like callback's index, and how the id refers to it.
 struct MapIndex {
-    ident: Ident,
-    // True when the plugin generated this parameter. It is written into the callback's
-    // parameter list only if `used`, so callbacks with no JSX keep their signature.
-    injected: bool,
+    source: IndexSource,
     used: bool,
 }
 
-// Where a map-like call keeps its callback, and whether appending an index parameter to
-// that callback is safe.
+impl MapIndex {
+    // Expression that evaluates to this level's index inside the callback body.
+    fn expr(&self) -> Expr {
+        match &self.source {
+            // Clone the binding's Ident verbatim so sym *and* SyntaxContext match the
+            // parameter. A fresh IdentName would carry an empty ctxt and not resolve.
+            IndexSource::Declared(id) | IndexSource::Appended(id) => Expr::Ident(id.clone()),
+            IndexSource::RestElement { rest, position } => Expr::Member(MemberExpr {
+                span: DUMMY_SP,
+                obj: Box::new(Expr::Ident(rest.clone())),
+                prop: MemberProp::Computed(ComputedPropName {
+                    span: DUMMY_SP,
+                    expr: Box::new(Expr::Lit(Lit::Num(Number {
+                        span: DUMMY_SP,
+                        value: *position,
+                        raw: None,
+                    }))),
+                }),
+            }),
+        }
+    }
+
+    // Whether the emitted segment must survive the index being absent at runtime.
+    // Only a parameter the source itself declares is taken on trust.
+    fn needs_guard(&self) -> bool {
+        !matches!(self.source, IndexSource::Declared(_))
+    }
+}
+
+// Which argument of a map-like call holds the callback.
 struct MapCallSite {
     arg_index: usize,
-    may_inject: bool,
 }
 
 // Collects identifier names (and the first SyntaxContext seen) from a subtree.
@@ -105,6 +150,8 @@ pub struct ReactDataTestIdTransform {
     map_indices: Vec<MapIndex>,
     // Monotonic counter for generated parameter names, unique per file.
     next_generated_id: u32,
+    // Owned default for `mapMethods`, so map_methods() can hand out a slice either way.
+    default_map_methods: Vec<String>,
 }
 
 impl ReactDataTestIdTransform {
@@ -125,6 +172,7 @@ impl ReactDataTestIdTransform {
             generated_testids: Vec::new(),
             map_indices: Vec::new(),
             next_generated_id: 0,
+            default_map_methods: MAP_METHODS.iter().map(|m| m.to_string()).collect(),
         }
     }
 
@@ -191,7 +239,24 @@ impl ReactDataTestIdTransform {
     // Generates attr_name={"prefix-" + i}, or {"prefix-" + i + "-" + j} when the element
     // sits inside nested map callbacks. Every enclosing index takes part, otherwise an
     // inner index alone would repeat for each outer iteration.
-    fn make_dynamic_attr(attr_name: &str, prefix: &str, index_vars: &[Ident]) -> JSXAttrOrSpread {
+    //
+    // An index the plugin *appended* is guarded, because whether the callee really
+    // passes one is a static guess:
+    //
+    //   {"List.li" + (__testidIdx0 === void 0 ? "" : "-" + __testidIdx0)}
+    //
+    // A wrong guess therefore degrades to the plain static id `List.li` — the pre-0.2.0
+    // behaviour — instead of producing `List.li-undefined` on every item. Indices the
+    // source declares are not guarded: writing `(item, i) =>` asserts the binding is
+    // real, and the unguarded form keeps the common output small.
+    //
+    // The test is strictly against `undefined`, not a truthiness or numeric check:
+    // `_.map(someObject, cb)` passes a *string* key, and index `0` is falsy.
+    fn make_dynamic_attr(
+        attr_name: &str,
+        prefix: &str,
+        segments: &[(Expr, bool)],
+    ) -> JSXAttrOrSpread {
         fn lit(value: String) -> Box<Expr> {
             Box::new(Expr::Lit(Lit::Str(Str {
                 span: DUMMY_SP,
@@ -207,17 +272,59 @@ impl ReactDataTestIdTransform {
                 right,
             }))
         }
+        // Text pieces are merged as they are pushed, so a separator folds into the
+        // literal before it: `"List.li-" + i`, not `"List.li" + "-" + i`.
+        enum Part {
+            Text(String),
+            Node(Box<Expr>),
+        }
+        fn push_text(parts: &mut Vec<Part>, s: &str) {
+            match parts.last_mut() {
+                Some(Part::Text(t)) => t.push_str(s),
+                _ => parts.push(Part::Text(s.to_string())),
+            }
+        }
 
         // The leading string literal makes every following `+` a string concatenation,
         // so numeric indices never sum.
-        let mut expr = lit(format!("{}-", prefix));
-        for (i, index_var) in index_vars.iter().enumerate() {
-            if i > 0 {
-                expr = concat(expr, lit("-".to_string()));
+        let mut parts = vec![Part::Text(prefix.to_string())];
+        for (index_expr, guarded) in segments {
+            let reference = || Box::new(index_expr.clone());
+            if *guarded {
+                parts.push(Part::Node(Box::new(Expr::Cond(CondExpr {
+                    span: DUMMY_SP,
+                    test: Box::new(Expr::Bin(BinExpr {
+                        span: DUMMY_SP,
+                        op: BinaryOp::EqEqEq,
+                        left: reference(),
+                        right: Box::new(Expr::Unary(UnaryExpr {
+                            span: DUMMY_SP,
+                            op: UnaryOp::Void,
+                            arg: Box::new(Expr::Lit(Lit::Num(Number {
+                                span: DUMMY_SP,
+                                value: 0.0,
+                                raw: None,
+                            }))),
+                        })),
+                    })),
+                    cons: lit(String::new()),
+                    alt: concat(lit("-".to_string()), reference()),
+                }))));
+            } else {
+                push_text(&mut parts, "-");
+                parts.push(Part::Node(reference()));
             }
-            // Clone the binding's Ident verbatim so sym *and* SyntaxContext match the
-            // parameter. A fresh IdentName would carry an empty ctxt and not resolve.
-            expr = concat(expr, Box::new(Expr::Ident(index_var.clone())));
+        }
+
+        let node = |part| match part {
+            Part::Text(t) => lit(t),
+            Part::Node(n) => n,
+        };
+        let mut parts = parts.into_iter();
+        // The first part is always the prefix text, so the fold starts from a literal.
+        let mut expr = parts.next().map(node).unwrap_or_else(|| lit(String::new()));
+        for part in parts {
+            expr = concat(expr, node(part));
         }
 
         JSXAttrOrSpread::JSXAttr(JSXAttr {
@@ -237,48 +344,42 @@ impl ReactDataTestIdTransform {
         arg.spread.is_none() && matches!(arg.expr.as_ref(), Expr::Arrow(_) | Expr::Fn(_))
     }
 
-    // Recognises the call shapes whose callback receives an element index:
-    //   items.map(cb)           → arg 0  (Array.prototype.map / flatMap, lodash chains)
-    //   items.map(cb, thisArg)  → arg 0  (a declared index is honoured, none is injected)
-    //   _.map(items, cb)        → arg 1  (lodash, React.Children.map, jQuery.map)
-    //   map(items, cb)          → arg 1  (the same functions imported by name)
+    // Recognises any call to a map-like name that has a callback literal in argument 0
+    // or 1, covering every iteration form in the wild:
+    //   items.map(cb)           Array.prototype.map / flatMap, lodash chains
+    //   items.map(cb, thisArg)  Array.prototype.map — the callback still gets an index
+    //   _.map(items, cb)        lodash, React.Children.map, jQuery.map
+    //   map(items, cb)          the same functions imported by name
+    //   R.map(cb, items)        ramda — no index is passed
+    //   map(cb)                 curried ramda / lodash-fp (no index), RxJS (index)
     //
-    // Ramda's argument order — map(fn, list) — is deliberately excluded from injection:
-    // its callback is called with the element only, so an injected parameter would be
-    // `undefined` and every id would end in "-undefined". A bare `map(cb)` is excluded
-    // for the same reason (curried ramda / lodash-fp / RxJS operator).
-    fn map_call_site(n: &CallExpr) -> Option<MapCallSite> {
+    // Whether the callee really passes an index is NOT decided here, and cannot be: the
+    // last two shapes are the same syntax for libraries that behave differently. That is
+    // why the emitted segment is guarded (make_dynamic_attr) — a callee that passes no
+    // index yields the plain static id. Detecting broadly and guarding the output finds
+    // strictly more real indices than detecting narrowly ever could.
+    fn map_call_site(&self, n: &CallExpr) -> Option<MapCallSite> {
         let Callee::Expr(callee) = &n.callee else {
             return None;
         };
-        let is_method = matches!(
-            callee.as_ref(),
-            Expr::Member(m) if matches!(&m.prop, MemberProp::Ident(i) if MAP_METHODS.contains(&i.sym.as_ref()))
-        );
-        let is_bare = matches!(
-            callee.as_ref(),
-            Expr::Ident(i) if MAP_METHODS.contains(&i.sym.as_ref())
-        );
-        if !is_method && !is_bare {
+        let named = |sym: &str| self.map_methods().iter().any(|m| m == sym);
+        let is_map_name = match callee.as_ref() {
+            Expr::Member(m) => matches!(&m.prop, MemberProp::Ident(i) if named(&i.sym)),
+            Expr::Ident(i) => named(&i.sym),
+            _ => false,
+        };
+        if !is_map_name {
             return None;
         }
 
         if n.args.first().is_some_and(Self::is_fn_literal) {
-            if !is_method {
-                return None;
-            }
-            // A second argument means either `.map(cb, thisArg)` or an unknown
-            // callback-first helper; too ambiguous to append a parameter to.
-            return Some(MapCallSite {
-                arg_index: 0,
-                may_inject: n.args.len() == 1,
-            });
+            return Some(MapCallSite { arg_index: 0 });
         }
-        if n.args.len() >= 2 && Self::is_fn_literal(&n.args[1]) {
-            return Some(MapCallSite {
-                arg_index: 1,
-                may_inject: true,
-            });
+        if self.collection_first_enabled()
+            && n.args.len() >= 2
+            && Self::is_fn_literal(&n.args[1])
+        {
+            return Some(MapCallSite { arg_index: 1 });
         }
         None
     }
@@ -292,12 +393,39 @@ impl ReactDataTestIdTransform {
         }
     }
 
-    // The index parameter the source already declares, if it is a plain identifier.
+    // The index parameter the source already declares, if it binds a plain identifier.
+    // A default value is unwrapped: `(item, index = 0) => …` still binds `index`, and the
+    // default only applies when the callee passes nothing — exactly the case where the
+    // guarded segment emitted by make_dynamic_attr would have dropped out anyway.
     fn declared_index_ident(callback: &Expr) -> Option<Ident> {
-        match Self::fn_params(callback)?.get(1)? {
-            Pat::Ident(binding) => Some(binding.id.clone()),
-            _ => None,
+        fn ident_of(pat: &Pat) -> Option<Ident> {
+            match pat {
+                Pat::Ident(binding) => Some(binding.id.clone()),
+                Pat::Assign(assign) => ident_of(&assign.left),
+                _ => None,
+            }
         }
+        ident_of(Self::fn_params(callback)?.get(1)?)
+    }
+
+    // A rest parameter collects the index instead of naming it: `(...args) => …` reads it
+    // as `args[1]`, and `(item, ...rest) => …` as `rest[0]`. Nothing may be appended after
+    // a rest element, but nothing needs to be — the index is already in scope.
+    fn rest_index_source(callback: &Expr) -> Option<IndexSource> {
+        let params = Self::fn_params(callback)?;
+        // Only positions 0 and 1 can hold the index; a rest element later collects
+        // arguments from position 2 onward, which is the collection, not the index.
+        for (position, pat) in params.iter().enumerate().take(2) {
+            if let Pat::Rest(rest) = pat {
+                if let Pat::Ident(binding) = rest.arg.as_ref() {
+                    return Some(IndexSource::RestElement {
+                        rest: binding.id.clone(),
+                        position: (1 - position) as f64,
+                    });
+                }
+            }
+        }
+        None
     }
 
     // A callback can take an appended index parameter only when it declares fewer than
@@ -372,6 +500,21 @@ impl ReactDataTestIdTransform {
         self.options.auto_index.unwrap_or(true)
     }
 
+    fn collection_first_enabled(&self) -> bool {
+        self.options.collection_first_map.unwrap_or(true)
+    }
+
+    fn nested_indexes_enabled(&self) -> bool {
+        self.options.nested_indexes.unwrap_or(true)
+    }
+
+    fn map_methods(&self) -> &[String] {
+        match self.options.map_methods.as_deref() {
+            Some(methods) => methods,
+            None => &self.default_map_methods,
+        }
+    }
+
     fn inject_attributes(&mut self, opening: &mut JSXOpeningElement) {
         let component = match self.current_component.clone() {
             Some(c) => c,
@@ -392,17 +535,28 @@ impl ReactDataTestIdTransform {
 
         for attr_name in attributes {
             if !Self::has_attribute(&opening.attrs, &attr_name) {
+                // With nestedIndexes off, only the innermost callback contributes — the
+                // pre-0.2.0 id, which repeats across outer iterations.
+                let levels = if self.nested_indexes_enabled() {
+                    0
+                } else {
+                    self.map_indices.len().saturating_sub(1)
+                };
                 let attr = if self.map_indices.is_empty() {
                     Self::make_attr(&attr_name, &test_id)
                 } else {
-                    let index_vars: Vec<Ident> =
-                        self.map_indices.iter().map(|m| m.ident.clone()).collect();
-                    // Every enclosing index is part of the id, so all of them are now
-                    // load-bearing and any generated ones must be written back.
-                    for m in &mut self.map_indices {
+                    // Only an index the source declares is taken on trust; anything the
+                    // plugin inferred is guarded so a wrong guess drops the segment.
+                    let segments: Vec<(Expr, bool)> = self.map_indices[levels..]
+                        .iter()
+                        .map(|m| (m.expr(), m.needs_guard()))
+                        .collect();
+                    // Every contributing index is now load-bearing, so a parameter the
+                    // plugin appended must be written back.
+                    for m in &mut self.map_indices[levels..] {
                         m.used = true;
                     }
-                    Self::make_dynamic_attr(&attr_name, &test_id, &index_vars)
+                    Self::make_dynamic_attr(&attr_name, &test_id, &segments)
                 };
                 opening.attrs.insert(0, attr);
             }
@@ -501,31 +655,22 @@ impl VisitMut for ReactDataTestIdTransform {
     // id repeated for every item. When the callback declares no index parameter, one is
     // appended — but only if a testid ends up referencing it.
     fn visit_mut_call_expr(&mut self, n: &mut CallExpr) {
-        let Some(site) = Self::map_call_site(n) else {
+        let Some(site) = self.map_call_site(n) else {
             n.visit_mut_children_with(self);
             return;
         };
 
+        // Prefer an index already in scope, in order of confidence: one the source names,
+        // then one a rest parameter collects, then one appended as a last resort.
         let callback = &n.args[site.arg_index].expr;
-        let mut index = match Self::declared_index_ident(callback) {
-            Some(ident) => Some(MapIndex {
-                ident,
-                injected: false,
-                used: false,
-            }),
-            None if site.may_inject
-                && self.auto_index_enabled()
-                && Self::can_take_index_param(callback) =>
-            {
-                let ident = self.fresh_ident(INDEX_PARAM_BASE, callback);
-                Some(MapIndex {
-                    ident,
-                    injected: true,
-                    used: false,
-                })
-            }
-            None => None,
-        };
+        let source = Self::declared_index_ident(callback)
+            .map(IndexSource::Declared)
+            .or_else(|| Self::rest_index_source(callback))
+            .or_else(|| {
+                (self.auto_index_enabled() && Self::can_take_index_param(callback))
+                    .then(|| IndexSource::Appended(self.fresh_ident(INDEX_PARAM_BASE, callback)))
+            });
+        let mut index = source.map(|source| MapIndex { source, used: false });
 
         // The index binding exists ONLY inside the callback. Visiting the callee or the
         // remaining arguments with it in scope emits a reference to a variable that does
@@ -543,8 +688,10 @@ impl VisitMut for ReactDataTestIdTransform {
                 arg.visit_mut_with(self);
                 continue;
             };
-            let ident = entry.ident.clone();
-            let injected = entry.injected;
+            let appended = match &entry.source {
+                IndexSource::Appended(ident) => Some(ident.clone()),
+                _ => None,
+            };
             self.map_indices.push(entry);
             arg.visit_mut_with(self);
             let entry = self
@@ -553,7 +700,7 @@ impl VisitMut for ReactDataTestIdTransform {
                 .expect("map index stack popped by a nested visit");
             // A callback whose JSX (if any) never used the index keeps its original
             // signature — no stray parameter in the output.
-            if injected && entry.used {
+            if let (Some(ident), true) = (appended, entry.used) {
                 self.append_index_param(&mut arg.expr, ident);
             }
         }
@@ -566,10 +713,25 @@ impl VisitMut for ReactDataTestIdTransform {
     }
 }
 
+// Deserializes the host's plugin config. A failure here discards EVERY option, not just
+// the bad one — `{"autoIndex": "false"}` (a string where a bool belongs) is valid JSON, so
+// it reaches us and then fails typed deserialization. Swallowing that leaves the user with
+// a config that appears accepted and does nothing, which is the silent no-op this repo has
+// been bitten by before. Report it, then fall back to defaults.
 fn parse_options(config_json: Option<String>) -> PluginOptions {
-    config_json
-        .and_then(|s| serde_json::from_str(&s).ok())
-        .unwrap_or_default()
+    let Some(raw) = config_json else {
+        return PluginOptions::default();
+    };
+    match serde_json::from_str(&raw) {
+        Ok(options) => options,
+        Err(e) => {
+            report_error(&format!(
+                "could not read the plugin config, so ALL options were ignored \
+                 (including any you set). Parse error: {e}. Config received: {raw}",
+            ));
+            PluginOptions::default()
+        }
+    }
 }
 
 // Reports a non-fatal plugin diagnostic. Inside the SWC plugin runner the host installs
@@ -704,11 +866,47 @@ mod tests {
         assert!(opts.attributes.is_none());
     }
 
+    // The dangerous shape: valid JSON that fails typed deserialization. Serde aborts the
+    // whole struct, so a single mistyped field silently discards the correct ones too —
+    // hence the reported error. Falling back to defaults keeps the build's ids sane.
+    #[test]
+    fn parse_options_falls_back_when_a_field_has_the_wrong_type() {
+        let opts = parse_options(Some(
+            r#"{"autoIndex":"false","attributes":["data-cy"]}"#.to_string(),
+        ));
+        assert_eq!(opts.auto_index, None);
+        assert!(
+            opts.attributes.is_none(),
+            "one bad field discards the rest — which is exactly why it must be reported"
+        );
+        assert!(ReactDataTestIdTransform::new(opts).auto_index_enabled());
+    }
+
     #[test]
     fn parse_options_deserializes_auto_index() {
         // camelCase in JSON maps to the snake_case field
         assert_eq!(parse_options(Some(r#"{"autoIndex":false}"#.to_string())).auto_index, Some(false));
         assert_eq!(parse_options(Some("{}".to_string())).auto_index, None);
+    }
+
+    // Every option reaches the plugin only as JSON from the host config. A field name
+    // that does not match is not a compile error — it is a silently ignored option, so
+    // each one is pinned here with the exact JSON a user would write.
+    #[test]
+    fn parse_options_deserializes_every_inference_option() {
+        let opts = parse_options(Some(
+            r#"{"mapMethods":["map"],"collectionFirstMap":false,"nestedIndexes":false}"#
+                .to_string(),
+        ));
+        assert_eq!(opts.map_methods, Some(vec!["map".to_string()]));
+        assert_eq!(opts.collection_first_map, Some(false));
+        assert_eq!(opts.nested_indexes, Some(false));
+
+        // …and each one actually reaches the behaviour it names.
+        let t = ReactDataTestIdTransform::new(opts);
+        assert!(!t.collection_first_enabled());
+        assert!(!t.nested_indexes_enabled());
+        assert_eq!(t.map_methods(), ["map".to_string()]);
     }
 
     #[test]
@@ -1020,51 +1218,61 @@ mod tests {
         }
     }
 
-    fn site(call: &CallExpr) -> Option<(usize, bool)> {
-        ReactDataTestIdTransform::map_call_site(call).map(|s| (s.arg_index, s.may_inject))
+    fn site(call: &CallExpr) -> Option<usize> {
+        ReactDataTestIdTransform::new(PluginOptions::default())
+            .map_call_site(call)
+            .map(|s| s.arg_index)
+    }
+
+    fn site_with(options: PluginOptions, call: &CallExpr) -> Option<usize> {
+        ReactDataTestIdTransform::new(options)
+            .map_call_site(call)
+            .map(|s| s.arg_index)
     }
 
     #[test]
     fn map_call_site_method_callback_first() {
         // items.map(cb)
         let c = call(Some("items"), "map", vec![arrow(vec![param("item")])]);
-        assert_eq!(site(&c), Some((0, true)));
+        assert_eq!(site(&c), Some(0));
     }
 
     #[test]
     fn map_call_site_detects_flat_map() {
         // items.flatMap(cb)
         let c = call(Some("items"), "flatMap", vec![arrow(vec![param("item")])]);
-        assert_eq!(site(&c), Some((0, true)));
+        assert_eq!(site(&c), Some(0));
     }
 
     #[test]
     fn map_call_site_lodash_style_callback_second() {
         // _.map(items, cb)
         let c = call(Some("_"), "map", vec![ident_expr("items"), arrow(vec![param("item")])]);
-        assert_eq!(site(&c), Some((1, true)));
+        assert_eq!(site(&c), Some(1));
     }
 
     #[test]
     fn map_call_site_bare_identifier_callback_second() {
         // map(items, cb) — named import of lodash's map
         let c = call(None, "map", vec![ident_expr("items"), arrow(vec![param("item")])]);
-        assert_eq!(site(&c), Some((1, true)));
+        assert_eq!(site(&c), Some(1));
     }
 
-    // Ramda passes the element only, so injecting an index would yield "-undefined".
+    // A bare map(cb) is RxJS's operator (which passes an index) or curried ramda /
+    // lodash-fp (which do not). The syntax is identical, so detection cannot tell them
+    // apart — it recognises all of them and the guarded segment absorbs the difference.
     #[test]
-    fn map_call_site_bare_identifier_callback_first_is_ignored() {
-        // map(cb, items)
+    fn map_call_site_detects_a_callback_first_bare_call() {
+        // map(cb, items) — ramda order, or a curried operator
         let c = call(None, "map", vec![arrow(vec![param("item")]), ident_expr("items")]);
-        assert_eq!(site(&c), None);
+        assert_eq!(site(&c), Some(0));
     }
 
     #[test]
-    fn map_call_site_method_with_extra_arg_detects_but_does_not_inject() {
+    fn map_call_site_detects_a_callback_alongside_a_second_argument() {
         // R.map(cb, items) / items.map(cb, thisArg)
         let c = call(Some("R"), "map", vec![arrow(vec![param("item")]), ident_expr("items")]);
-        assert_eq!(site(&c), Some((0, false)));
+        assert_eq!(site(&c), Some(0));
     }
 
     #[test]
@@ -1078,6 +1286,65 @@ mod tests {
         // items.map(renderItem)
         let c = call(Some("items"), "map", vec![ident_expr("renderItem")]);
         assert_eq!(site(&c), None);
+    }
+
+    // --- opt-out options: each narrows detection, none is needed for correctness ---
+
+    #[test]
+    fn map_methods_option_narrows_which_names_are_detected() {
+        let flat = call(Some("items"), "flatMap", vec![arrow(vec![param("item")])]);
+        let plain = call(Some("items"), "map", vec![arrow(vec![param("item")])]);
+        let only_map = || PluginOptions {
+            map_methods: Some(vec!["map".to_string()]),
+            ..Default::default()
+        };
+        assert_eq!(site_with(only_map(), &flat), None, "flatMap must be excluded");
+        assert_eq!(site_with(only_map(), &plain), Some(0), "map must still be detected");
+
+        // and it can widen, for a project-local iterator
+        let custom = call(Some("items"), "mapIndexed", vec![arrow(vec![param("item")])]);
+        assert_eq!(site(&custom), None);
+        assert_eq!(
+            site_with(
+                PluginOptions {
+                    map_methods: Some(vec!["mapIndexed".to_string()]),
+                    ..Default::default()
+                },
+                &custom
+            ),
+            Some(0)
+        );
+    }
+
+    #[test]
+    fn collection_first_map_option_disables_the_argument_one_form() {
+        let c = call(Some("_"), "map", vec![ident_expr("items"), arrow(vec![param("item")])]);
+        assert_eq!(site(&c), Some(1));
+        assert_eq!(
+            site_with(
+                PluginOptions {
+                    collection_first_map: Some(false),
+                    ..Default::default()
+                },
+                &c
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn empty_map_methods_disables_detection_entirely() {
+        let c = call(Some("items"), "map", vec![arrow(vec![param("item")])]);
+        assert_eq!(
+            site_with(
+                PluginOptions {
+                    map_methods: Some(Vec::new()),
+                    ..Default::default()
+                },
+                &c
+            ),
+            None
+        );
     }
 
     // --- declared_index_ident / can_take_index_param ---
@@ -1109,6 +1376,28 @@ mod tests {
             }),
         ]);
         assert!(ReactDataTestIdTransform::declared_index_ident(&cb).is_none());
+    }
+
+    #[test]
+    fn declared_index_ident_unwraps_a_default_value() {
+        // `(item, index = 0) => …` still binds `index`; the default only applies when
+        // the callee passes nothing, so referencing it is always safe.
+        let cb = arrow(vec![
+            param("item"),
+            Pat::Assign(AssignPat {
+                span: DUMMY_SP,
+                left: Box::new(param("index")),
+                right: Box::new(Expr::Lit(Lit::Num(Number {
+                    span: DUMMY_SP,
+                    value: 0.0,
+                    raw: None,
+                }))),
+            }),
+        ]);
+        assert_eq!(
+            ReactDataTestIdTransform::declared_index_ident(&cb).map(|i| i.sym.to_string()),
+            Some("index".to_string())
+        );
     }
 
     #[test]
@@ -1198,12 +1487,18 @@ mod tests {
     #[test]
     fn auto_index_can_be_disabled() {
         let t = ReactDataTestIdTransform::new(PluginOptions {
-            attributes: None,
-            manifest_dir: None,
             auto_index: Some(false),
+            ..Default::default()
         });
         assert!(!t.auto_index_enabled());
-        assert!(ReactDataTestIdTransform::new(PluginOptions::default()).auto_index_enabled());
+
+        // Every option defaults to the maximally-inferring behaviour: the plugin must
+        // deliver unique ids out of the box, with flags available only to turn that off.
+        let d = ReactDataTestIdTransform::new(PluginOptions::default());
+        assert!(d.auto_index_enabled());
+        assert!(d.collection_first_enabled());
+        assert!(d.nested_indexes_enabled());
+        assert_eq!(d.map_methods(), ["map".to_string(), "flatMap".to_string()]);
     }
 
     // Regression guard: the generated index reference must reuse the parameter's own
@@ -1225,7 +1520,11 @@ mod tests {
             "test setup must use a non-empty ctxt or it proves nothing"
         );
 
-        let attr = ReactDataTestIdTransform::make_dynamic_attr("data-testid", "List.li", &[index_ident.clone()]);
+        let attr = ReactDataTestIdTransform::make_dynamic_attr(
+            "data-testid",
+            "List.li",
+            &[(Expr::Ident(index_ident.clone()), false)],
+        );
 
         let JSXAttrOrSpread::JSXAttr(attr) = attr else {
             panic!("expected a JSXAttr");
@@ -1250,6 +1549,81 @@ mod tests {
         );
     }
 
+    // An appended index is a static guess about the callee. If the guess is wrong the id
+    // must fall back to the plain static id, not "List.li-undefined" on every item — so
+    // the segment is emitted as a conditional, and both of its references must carry the
+    // parameter's own SyntaxContext or a minifier will break one of them.
+    #[test]
+    fn make_dynamic_attr_guards_an_injected_index() {
+        let mut index_ident: Ident = IdentName {
+            span: DUMMY_SP,
+            sym: "__testidIdx0".into(),
+        }
+        .into();
+        index_ident.ctxt =
+            GLOBALS.set(&Globals::new(), || SyntaxContext::empty().apply_mark(Mark::new()));
+
+        let attr = ReactDataTestIdTransform::make_dynamic_attr(
+            "data-testid",
+            "List.li",
+            &[(Expr::Ident(index_ident.clone()), true)],
+        );
+
+        let JSXAttrOrSpread::JSXAttr(attr) = attr else {
+            panic!("expected a JSXAttr");
+        };
+        let Some(JSXAttrValue::JSXExprContainer(c)) = attr.value else {
+            panic!("expected an expression container");
+        };
+        let JSXExpr::Expr(expr) = c.expr else {
+            panic!("expected an expression");
+        };
+        // "List.li" + (…)  — the leading literal keeps every `+` a string concatenation
+        let Expr::Bin(bin) = *expr else {
+            panic!("expected a binary expression");
+        };
+        assert!(
+            matches!(bin.left.as_ref(), Expr::Lit(Lit::Str(_))),
+            "the prefix must stay a plain literal, so a dropped segment yields the static id"
+        );
+        let Expr::Cond(cond) = *bin.right else {
+            panic!("an injected index must be emitted as a guarded conditional");
+        };
+
+        // test: __testidIdx0 === void 0
+        let Expr::Bin(test) = *cond.test else {
+            panic!("expected a comparison");
+        };
+        assert_eq!(test.op, BinaryOp::EqEqEq, "a loose or truthiness test would drop index 0");
+        let Expr::Ident(tested) = *test.left else {
+            panic!("expected the index on the left of the comparison");
+        };
+        assert_eq!(tested.ctxt, index_ident.ctxt, "the guard must reference the binding");
+        assert!(
+            matches!(test.right.as_ref(), Expr::Unary(u) if u.op == UnaryOp::Void),
+            "compare against `void 0`, which cannot be shadowed, not the `undefined` global"
+        );
+
+        // consequent: "" — the id degrades to exactly the static id
+        assert!(
+            matches!(cond.cons.as_ref(), Expr::Lit(Lit::Str(s)) if s.value.is_empty()),
+            "a missing index must contribute nothing at all"
+        );
+
+        // alternative: "-" + __testidIdx0
+        let Expr::Bin(alt) = *cond.alt else {
+            panic!("expected a concatenation in the alternative");
+        };
+        let Expr::Ident(used) = *alt.right else {
+            panic!("expected the index identifier");
+        };
+        assert_eq!(used.sym, index_ident.sym);
+        assert_eq!(
+            used.ctxt, index_ident.ctxt,
+            "generated reference must carry the parameter's SyntaxContext"
+        );
+    }
+
     // --- inject_attributes with an active map index ---
 
     #[test]
@@ -1257,8 +1631,9 @@ mod tests {
         let mut t = ReactDataTestIdTransform::new(PluginOptions::default());
         t.current_component = Some("List".to_string());
         t.map_indices.push(MapIndex {
-            ident: IdentName { span: DUMMY_SP, sym: "index".into() }.into(),
-            injected: false,
+            source: IndexSource::Declared(
+                IdentName { span: DUMMY_SP, sym: "index".into() }.into(),
+            ),
             used: false,
         });
         let mut opening = JSXOpeningElement {
