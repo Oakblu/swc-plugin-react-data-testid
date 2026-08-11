@@ -622,8 +622,8 @@ degrade to the static id. The pages add two page-wide invariants: no id reads
 
 ```bash
 cd example/vite
-npm install
-npm run dev      # then open http://localhost:5173
+pnpm install
+pnpm dev         # then open http://localhost:5173
 ```
 
 The "Iteration Forms — self-checking" section reports `✅ 15/15 checks passed`, or lists
@@ -637,22 +637,22 @@ That page is also rendered headlessly in `example/vitest`
 
 ```bash
 cd example/nextjs-swc
-npm install
-npm run dev      # then open http://localhost:3000
+pnpm install
+pnpm dev         # then open http://localhost:3000
 ```
 
 The same self-checking section runs after hydration, so a green banner means the ids
 survived a **prerendered, minified Turbopack build** — the only host where a generated
 identifier that failed to bind would surface as a `ReferenceError` rather than merely a
-wrong id. `npm run build` prerenders the page to `.next/server/pages/index.html`, where
+wrong id. `pnpm build` prerenders the page to `.next/server/pages/index.html`, where
 the ids can be read directly.
 
 ### Jest (`@swc/jest`)
 
 ```bash
 cd example/jest
-npm install
-npm test
+pnpm install
+pnpm test
 ```
 
 `@testing-library/react` tests asserting the plugin injected the expected attributes.
@@ -663,8 +663,8 @@ iteration form produces.
 
 ```bash
 cd example/vitest
-npm install
-npm test
+pnpm install
+pnpm test
 ```
 
 Same assertions via `@vitejs/plugin-react-swc`, plus `src/__tests__/MapHosts.test.jsx`,
