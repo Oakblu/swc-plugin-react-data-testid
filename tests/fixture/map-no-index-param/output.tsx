@@ -5,7 +5,7 @@
 const List = ({ items }: {
     items: string[];
 })=><ul data-testid="List.ul">
-    {items.map((item, __testidIdx0)=><li data-testid={"List.li-" + __testidIdx0}>{item}</li>)}
+    {items.map((item, __testidIdx0)=><li data-testid={"List.li" + (__testidIdx0 === void 0 ? "" : "-" + __testidIdx0)}>{item}</li>)}
   </ul>;
 // No parameters at all: a placeholder is added so the index can be the 2nd parameter.
 const Stars = ({ count }: {
@@ -13,7 +13,7 @@ const Stars = ({ count }: {
 })=><div data-testid="Stars.div">
     {Array.from({
         length: count
-    }).map((__testidItem2, __testidIdx1)=><span data-testid={"Stars.span-" + __testidIdx1}>*</span>)}
+    }).map((__testidItem2, __testidIdx1)=><span data-testid={"Stars.span" + (__testidIdx1 === void 0 ? "" : "-" + __testidIdx1)}>*</span>)}
   </div>;
 // A destructured item parameter is left untouched; the index is appended after it.
 const Rows = ({ rows }: {
@@ -22,7 +22,7 @@ const Rows = ({ rows }: {
     }[];
 })=><table data-testid="Rows.table">
     <tbody data-testid="Rows.tbody">
-      {rows.map(({ id }, __testidIdx3)=><tr data-testid={"Rows.tr-" + __testidIdx3}>{id}</tr>)}
+      {rows.map(({ id }, __testidIdx3)=><tr data-testid={"Rows.tr" + (__testidIdx3 === void 0 ? "" : "-" + __testidIdx3)}>{id}</tr>)}
     </tbody>
   </table>;
 // function expressions get the same treatment as arrows
@@ -30,6 +30,6 @@ const Legacy = ({ items }: {
     items: string[];
 })=><ol data-testid="Legacy.ol">
     {items.map(function(item, __testidIdx4) {
-        return <li data-testid={"Legacy.li-" + __testidIdx4}>{item}</li>;
+        return <li data-testid={"Legacy.li" + (__testidIdx4 === void 0 ? "" : "-" + __testidIdx4)}>{item}</li>;
     })}
   </ol>;

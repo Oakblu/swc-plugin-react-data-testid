@@ -10,5 +10,5 @@ const Groups = ({ groups }: {
 const Tags = ({ tags }: {
     tags: string[][];
 })=><div data-testid="Tags.div">
-    {tags.flatMap((group, __testidIdx0)=><span data-testid={"Tags.span-" + __testidIdx0}>{group.length}</span>)}
+    {tags.flatMap((group, __testidIdx0)=><span data-testid={"Tags.span" + (__testidIdx0 === void 0 ? "" : "-" + __testidIdx0)}>{group.length}</span>)}
   </div>;

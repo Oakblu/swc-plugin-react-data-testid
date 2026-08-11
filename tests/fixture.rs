@@ -268,29 +268,52 @@ mod correctness {
 
     #[test]
     fn map_no_index_param() {
-        // callbacks that declare no index get one appended, so ids are unique per item
+        // callbacks that declare no index get one appended, so ids are unique per item.
+        // An appended index is guarded: whether the callee passes one is a static guess,
+        // and a wrong guess must degrade to the static id, never to "-undefined".
         check("tests/fixture/map-no-index-param", true, &[
             r#"(item, __testidIdx0)"#,
-            r#"data-testid={"List.li-" + __testidIdx0}"#,
+            r#"data-testid={"List.li" + (__testidIdx0 === void 0 ? "" : "-" + __testidIdx0)}"#,
             // a parameterless callback gains a placeholder so the index stays 2nd
             r#"(__testidItem2, __testidIdx1)"#,
-            r#"data-testid={"Stars.span-" + __testidIdx1}"#,
+            r#"data-testid={"Stars.span" + (__testidIdx1 === void 0 ? "" : "-" + __testidIdx1)}"#,
             // destructured item parameter is preserved
             r#"({ id }, __testidIdx3)"#,
-            r#"data-testid={"Rows.tr-" + __testidIdx3}"#,
+            r#"data-testid={"Rows.tr" + (__testidIdx3 === void 0 ? "" : "-" + __testidIdx3)}"#,
             // function expressions too
             r#"function(item, __testidIdx4)"#,
-            r#"data-testid={"Legacy.li-" + __testidIdx4}"#,
+            r#"data-testid={"Legacy.li" + (__testidIdx4 === void 0 ? "" : "-" + __testidIdx4)}"#,
         ]);
+        let output =
+            std::fs::read_to_string("tests/fixture/map-no-index-param/output.tsx").unwrap();
+        assert!(
+            !output.contains("undefined"),
+            "the guard must test against `void 0`, which no minifier can shadow"
+        );
     }
 
     #[test]
     fn map_flatmap() {
         // flatMap passes (item, index) exactly like map
         check("tests/fixture/map-flatmap", true, &[
+            // a declared index is not guarded — the source asserts the binding is real
             r#"data-testid={"Groups.li-" + i}"#,
             r#"(group, __testidIdx0)"#,
-            r#"data-testid={"Tags.span-" + __testidIdx0}"#,
+            r#"data-testid={"Tags.span" + (__testidIdx0 === void 0 ? "" : "-" + __testidIdx0)}"#,
+        ]);
+    }
+
+    #[test]
+    fn map_index_param_shapes() {
+        // a second parameter that still binds one identifier is usable as the index
+        check("tests/fixture/map-index-param-shapes", true, &[
+            r#"(item, index = 0)"#,
+            r#"data-testid={"Defaulted.li-" + index}"#,   // default value unwrapped
+            r#"data-testid={"Annotated.li-" + index}"#,   // type annotation ignored
+            r#"data-testid={"WithArray.li-" + index}"#,   // 3rd parameter is untouched
+            // a destructuring pattern binds nothing to reference: static id, and the
+            // occupied slot means no parameter is appended either
+            r#"items.map((item, [i])=><li data-testid="Destructured.li">"#,
         ]);
     }
 
@@ -310,10 +333,11 @@ mod correctness {
         // one index segment per enclosing callback, or the inner index would repeat
         // for every outer iteration
         check("tests/fixture/map-nested", true, &[
-            r#"data-testid={"Table.tr-" + __testidIdx0}"#,
-            r#"data-testid={"Table.td-" + __testidIdx0 + "-" + __testidIdx1}"#,
+            r#"data-testid={"Table.tr" + (__testidIdx0 === void 0 ? "" : "-" + __testidIdx0)}"#,
+            r#"data-testid={"Table.td" + (__testidIdx0 === void 0 ? "" : "-" + __testidIdx0) + (__testidIdx1 === void 0 ? "" : "-" + __testidIdx1)}"#,
+            // a declared outer index stays unguarded next to an appended inner one
             r#"data-testid={"Mixed.section-" + groupIndex}"#,
-            r#"data-testid={"Mixed.p-" + groupIndex + "-" + __testidIdx2}"#,
+            r#"data-testid={"Mixed.p-" + groupIndex + (__testidIdx2 === void 0 ? "" : "-" + __testidIdx2)}"#,
         ]);
     }
 

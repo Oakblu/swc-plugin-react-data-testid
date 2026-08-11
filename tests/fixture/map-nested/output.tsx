@@ -4,8 +4,8 @@ const Table = ({ rows }: {
     rows: string[][];
 })=><table data-testid="Table.table">
     <tbody data-testid="Table.tbody">
-      {rows.map((cells, __testidIdx0)=><tr data-testid={"Table.tr-" + __testidIdx0}>
-          {cells.map((cell, __testidIdx1)=><td data-testid={"Table.td-" + __testidIdx0 + "-" + __testidIdx1}>{cell}</td>)}
+      {rows.map((cells, __testidIdx0)=><tr data-testid={"Table.tr" + (__testidIdx0 === void 0 ? "" : "-" + __testidIdx0)}>
+          {cells.map((cell, __testidIdx1)=><td data-testid={"Table.td" + (__testidIdx0 === void 0 ? "" : "-" + __testidIdx0) + (__testidIdx1 === void 0 ? "" : "-" + __testidIdx1)}>{cell}</td>)}
         </tr>)}
     </tbody>
   </table>;
@@ -14,6 +14,6 @@ const Mixed = ({ groups }: {
     groups: string[][];
 })=><div data-testid="Mixed.div">
     {groups.map((group, groupIndex)=><section data-testid={"Mixed.section-" + groupIndex} key={groupIndex}>
-        {group.map((item, __testidIdx2)=><p data-testid={"Mixed.p-" + groupIndex + "-" + __testidIdx2}>{item}</p>)}
+        {group.map((item, __testidIdx2)=><p data-testid={"Mixed.p-" + groupIndex + (__testidIdx2 === void 0 ? "" : "-" + __testidIdx2)}>{item}</p>)}
       </section>)}
   </div>;
