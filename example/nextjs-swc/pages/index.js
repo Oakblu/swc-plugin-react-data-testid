@@ -5,6 +5,7 @@ import Modal from "../src/components/Modal";
 import ClassComponent from "../src/components/ClassComponent";
 import SimpleTest from "../src/SimpleTest";
 import EdgeCasesShowcase from "../src/components/EdgeCasesShowcase";
+import IterationForms from "../src/components/IterationForms";
 
 export default function Home() {
   const [showModal, setShowModal] = useState(false);
@@ -110,6 +111,18 @@ export default function Home() {
                 )}
               </div>
             </div>
+          </section>
+
+          <section className="demo-section">
+            <div className="section-header">
+              <h2>Iteration Forms — self-checking</h2>
+              <p>
+                Every map-like shape the plugin infers an index for, checked against the
+                live DOM after hydration. Green means the prerendered, minified output is
+                correct — no DevTools needed.
+              </p>
+            </div>
+            <IterationForms />
           </section>
 
           <section className="demo-section">

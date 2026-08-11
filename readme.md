@@ -599,21 +599,55 @@ through SWC's plugin metadata channel, or collecting them in a host-side post-pa
 
 ## Example Applications
 
-### Next.js
+Every example carries the same **iteration-forms checklist** — each map-like shape the
+plugin recognises, paired with the exact ids it must produce. The browser examples check
+themselves and report a banner; the test examples assert the same expectations. Between
+them, all four SWC hosts are covered:
 
-A complete Next.js example is available in `example/nextjs-swc/`:
+| Example | Host | How the checklist appears |
+| ------- | ---- | ------------------------- |
+| `example/vite` | `@vitejs/plugin-react-swc` | self-checking page, dev + `vite build` |
+| `example/nextjs-swc` | Next.js / Turbopack | self-checking page, after hydration of the prerendered, minified output |
+| `example/jest` | `@swc/jest` | `src/__tests__/IterationForms.test.jsx` |
+| `example/vitest` | Vitest + `@vitejs/plugin-react-swc` | `MapHosts.test.jsx` (real libraries) + the vite page rendered headlessly |
+
+The checklist covers a declared index, an index behind a default value, an appended index,
+both rest-parameter shapes, `flatMap`, `.map(callback, thisArg)`, collection-first
+`map(items, callback)`, `React.Children.map`, the operator form `map(callback)`, nested
+callbacks, an id written by hand, and a callee that passes no index at all — which must
+degrade to the static id. The pages add two page-wide invariants: no id reads
+`-undefined`, and no inferred id is duplicated.
+
+### Vite — a self-checking page
+
+```bash
+cd example/vite
+npm install
+npm run dev      # then open http://localhost:5173
+```
+
+The "Iteration Forms — self-checking" section reports `✅ 15/15 checks passed`, or lists
+the expected and actual ids for anything that failed — so verifying a build is reading one
+banner rather than inspecting elements by hand.
+
+That page is also rendered headlessly in `example/vitest`
+(`src/__tests__/IterationForms.test.jsx`), so the banner turning red fails CI.
+
+### Next.js
 
 ```bash
 cd example/nextjs-swc
 npm install
-npm run dev
+npm run dev      # then open http://localhost:3000
 ```
 
-Open [http://localhost:3000](http://localhost:3000) and inspect the DOM to see the automatically generated `data-testid` attributes.
+The same self-checking section runs after hydration, so a green banner means the ids
+survived a **prerendered, minified Turbopack build** — the only host where a generated
+identifier that failed to bind would surface as a `ReferenceError` rather than merely a
+wrong id. `npm run build` prerenders the page to `.next/server/pages/index.html`, where
+the ids can be read directly.
 
 ### Jest (`@swc/jest`)
-
-A Jest example is available in `example/jest/`. It runs `@testing-library/react` tests that assert the plugin actually injected the expected `data-testid` attributes:
 
 ```bash
 cd example/jest
@@ -621,15 +655,21 @@ npm install
 npm test
 ```
 
-### Vitest
+`@testing-library/react` tests asserting the plugin injected the expected attributes.
+`src/__tests__/IterationForms.test.jsx` is the fastest way to see exactly what ids each
+iteration form produces.
 
-A Vitest example is available in `example/vitest/`. Same assertions as the Jest example, using `@vitejs/plugin-react-swc` to load the plugin:
+### Vitest
 
 ```bash
 cd example/vitest
 npm install
 npm test
 ```
+
+Same assertions via `@vitejs/plugin-react-swc`, plus `src/__tests__/MapHosts.test.jsx`,
+which exercises the iteration forms against the **real** libraries rather than stand-ins —
+`lodash` (arrays *and* objects, where the callback receives a string key) and `jquery`.
 
 ---
 

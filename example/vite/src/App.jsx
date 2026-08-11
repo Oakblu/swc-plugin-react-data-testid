@@ -5,6 +5,7 @@ import Modal from "./components/Modal";
 import ClassComponent from "./components/ClassComponent";
 import SimpleTest from "./SimpleTest";
 import EdgeCasesShowcase from "./components/EdgeCasesShowcase";
+import IterationForms from "./components/IterationForms";
 import "./App.css";
 
 export default function App() {
@@ -111,6 +112,18 @@ export default function App() {
                 )}
               </div>
             </div>
+          </section>
+
+          <section className="demo-section">
+            <div className="section-header">
+              <h2>Iteration Forms — self-checking</h2>
+              <p>
+                Every map-like shape the plugin infers an index for, each checked against
+                the live DOM. The banner is green only if all of them produced the exact
+                ids listed — no DevTools needed.
+              </p>
+            </div>
+            <IterationForms />
           </section>
 
           <section className="demo-section">
