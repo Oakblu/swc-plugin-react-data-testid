@@ -1,0 +1,31 @@
+---
+description: Build invariants and AI-doc map for swc-plugin-react-data-testid
+alwaysApply: true
+---
+
+Two AI-facing documents, for two different jobs:
+
+- Editing this repository → `CLAUDE.md` (build invariants; each exists because it was
+  violated silently in the past, and none are caught by `cargo test`).
+- Using the published plugin → `AGENTS.md` (id-naming specification).
+
+Before reporting any change complete, run:
+
+```bash
+./scripts/check-invariants.sh && cargo test && cargo build --target wasm32-wasip1 --release
+```
+
+Non-zero from `check-invariants.sh` means re-run with `--fix`, then hand-fix the rest.
+
+Highest-value traps:
+
+- `cargo test` never crosses the plugin FFI boundary — a dependency-pin mismatch passes
+  the suite and fails only at the WASM link step. Always run the WASM build.
+- A new fixture directory is silently not run until `touch tests/fixture.rs`, because
+  `#[testing::fixture]` expands its glob at compile time.
+- Never swallow a `Result` in `src/lib.rs` — the WASI sandbox turns a swallowed error
+  into a silent no-op, and config deserialization is all-or-nothing.
+- Every generated identifier must reuse the source binding's `Ident` (`sym` *and*
+  `SyntaxContext`), or a minifier will not rename it and the build breaks only under
+  minification.
+- Do not publish or commit without an explicit request.

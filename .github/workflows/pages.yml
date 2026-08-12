@@ -1,0 +1,61 @@
+name: 📄 Publish docs to GitHub Pages
+
+# Publishes llms.txt, AGENTS.md, the README, the changelog and the options schema at
+# stable HTTPS paths. llms.txt is only meaningful as a URL an agent can fetch, which a
+# repository file is not. The site is assembled from the repo's own docs at build time
+# (scripts/build-site.sh), so there is no checked-in mirror to drift.
+#
+# Requires: repo Settings → Pages → Source = "GitHub Actions" (one-time, manual).
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - llms.txt
+      - AGENTS.md
+      - readme.md
+      - CHANGELOG.md
+      - schema/**
+      - package.json
+      - scripts/build-site.sh
+      - .github/workflows/pages.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Never cancel a deploy midway; queue instead.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: 🔨 Build site
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: 🔨 Assemble _site
+        run: ./scripts/build-site.sh
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+  deploy:
+    name: 🚀 Deploy
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
