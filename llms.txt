@@ -17,14 +17,17 @@ It does not apply to Babel-compiled projects: SWC Wasm plugins run inside SWC on
 - Install: `npm install --save-dev swc-plugin-react-data-testid`
 - Enable (`.swcrc`): `{"jsc":{"experimental":{"plugins":[["swc-plugin-react-data-testid",{}]]}}}`
 - Enable (`next.config.js`): `experimental: { swcPlugins: [["swc-plugin-react-data-testid", {}]] }`
-- No options are required. Every option exists to turn inference *off*.
+- No options are required to get unique ids; every inference option exists to turn one
+  *off*. The single exception is `instanceIds`, which is off by default and prefixes a
+  component's ids with the one its parent passed down, so two instances of the same
+  component stop repeating ids.
 
 ## Docs
 
 - [Agent reference](https://raw.githubusercontent.com/Oakblu/plugin-react-data-testid-generator/master/AGENTS.md): the complete, precise specification of the naming algorithm — read this to predict generated ids, write selectors, or answer questions about the plugin's output. Also shipped inside the npm package as `AGENTS.md`.
 - [README](https://raw.githubusercontent.com/Oakblu/plugin-react-data-testid-generator/master/readme.md): installation, per-framework setup (Next.js, Vite, Jest, Vitest, Rspack), worked transformations, limitations, example apps.
 - [Options JSON Schema](https://raw.githubusercontent.com/Oakblu/plugin-react-data-testid-generator/master/schema/plugin-options.schema.json): machine-readable definition of every plugin option, its type, default, and constraints.
-- [CHANGELOG](https://raw.githubusercontent.com/Oakblu/plugin-react-data-testid-generator/master/CHANGELOG.md): behavioural changes by version; 0.2.0 changed ids inside `.map()` callbacks.
+- [CHANGELOG](https://raw.githubusercontent.com/Oakblu/plugin-react-data-testid-generator/master/CHANGELOG.md): behavioural changes by version; 0.2.0 changed ids inside `.map()` callbacks, and 0.3.0 changed them again for the three iteration forms that still shared one id (`R.map(fn, items)`, `items.map(renderItem)`, a destructured index slot).
 
 ## Optional
 

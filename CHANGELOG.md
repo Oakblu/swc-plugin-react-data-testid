@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.3.0
 
 ### The iteration forms that still shared one id now get unique ids
 
