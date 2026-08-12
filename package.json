@@ -1,15 +1,23 @@
 {
   "name": "swc-plugin-react-data-testid",
   "version": "0.2.0",
-  "description": "SWC plugin to automatically generate data-testid attributes for React components",
+  "description": "SWC plugin that automatically adds unique data-testid attributes to every React JSX element at build time — stable selectors for Playwright, Cypress and Testing Library, including per-item ids inside .map() loops. Zero config.",
   "license": "MIT",
-  "repository": "Oakblu/plugin-react-data-testid-generator",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Oakblu/plugin-react-data-testid-generator.git"
+  },
+  "homepage": "https://github.com/Oakblu/plugin-react-data-testid-generator#readme",
+  "bugs": "https://github.com/Oakblu/plugin-react-data-testid-generator/issues",
   "author": "pablohpsilva <pablohpsilva@proton.me>",
   "main": "plugin.wasm",
   "files": [
     "plugin.wasm",
     "scripts/merge-manifest.mjs",
-    "CHANGELOG.md"
+    "CHANGELOG.md",
+    "AGENTS.md",
+    "llms.txt",
+    "schema/plugin-options.schema.json"
   ],
   "bin": {
     "testid-merge-manifest": "scripts/merge-manifest.mjs"
@@ -20,7 +28,27 @@
     "react",
     "data-testid",
     "data-test",
+    "data-test-id",
+    "data-cy",
+    "testid",
+    "test-id",
+    "test-ids",
     "testing",
+    "test-automation",
+    "e2e",
+    "end-to-end-testing",
+    "playwright",
+    "cypress",
+    "testing-library",
+    "jest",
+    "vitest",
+    "selectors",
+    "jsx",
+    "nextjs",
+    "vite",
+    "codegen",
+    "build-time",
+    "wasm",
     "automation",
     "unique-ids"
   ],

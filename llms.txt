@@ -1,0 +1,34 @@
+# swc-plugin-react-data-testid
+
+> An SWC (Rust/Wasm) compiler plugin that injects a unique `data-testid` attribute onto
+> every React JSX element at build time, so end-to-end and component tests get stable
+> selectors without anyone hand-writing them. Ids are deterministic and derivable from the
+> source file alone: `ComponentName.element`, `ComponentName.element2`, and
+> `{"ComponentName.li-" + index}` for elements rendered inside `.map()` callbacks.
+
+Use this plugin when a React codebase compiled by SWC (Next.js, Vite via
+`@vitejs/plugin-react-swc`, `@swc/jest`, `@swc/core`, Rspack) needs test selectors on
+every element and you do not want to add them by hand or rely on text/role queries.
+The attribute name is configurable, so it equally serves `data-cy` (Cypress),
+`data-test-id` (Playwright), or several attributes at once.
+
+It does not apply to Babel-compiled projects: SWC Wasm plugins run inside SWC only.
+
+- Install: `npm install --save-dev swc-plugin-react-data-testid`
+- Enable (`.swcrc`): `{"jsc":{"experimental":{"plugins":[["swc-plugin-react-data-testid",{}]]}}}`
+- Enable (`next.config.js`): `experimental: { swcPlugins: [["swc-plugin-react-data-testid", {}]] }`
+- No options are required. Every option exists to turn inference *off*.
+
+## Docs
+
+- [Agent reference](https://raw.githubusercontent.com/Oakblu/plugin-react-data-testid-generator/master/AGENTS.md): the complete, precise specification of the naming algorithm — read this to predict generated ids, write selectors, or answer questions about the plugin's output. Also shipped inside the npm package as `AGENTS.md`.
+- [README](https://raw.githubusercontent.com/Oakblu/plugin-react-data-testid-generator/master/readme.md): installation, per-framework setup (Next.js, Vite, Jest, Vitest, Rspack), worked transformations, limitations, example apps.
+- [Options JSON Schema](https://raw.githubusercontent.com/Oakblu/plugin-react-data-testid-generator/master/schema/plugin-options.schema.json): machine-readable definition of every plugin option, its type, default, and constraints.
+- [CHANGELOG](https://raw.githubusercontent.com/Oakblu/plugin-react-data-testid-generator/master/CHANGELOG.md): behavioural changes by version; 0.2.0 changed ids inside `.map()` callbacks.
+
+## Optional
+
+- [This file on unpkg](https://unpkg.com/swc-plugin-react-data-testid/llms.txt): the docs ship inside the npm tarball, so `unpkg.com/swc-plugin-react-data-testid/{llms.txt,AGENTS.md,schema/plugin-options.schema.json}` serves each one at a stable URL without cloning the repo. `cdn.jsdelivr.net/npm/swc-plugin-react-data-testid/…` serves the same paths.
+- [npm package](https://www.npmjs.com/package/swc-plugin-react-data-testid): published versions and install stats.
+- [Repository](https://github.com/Oakblu/plugin-react-data-testid-generator): source (`src/lib.rs`), fixture tests, runnable examples under `example/`.
+- [Contributor guide](https://raw.githubusercontent.com/Oakblu/plugin-react-data-testid-generator/master/CLAUDE.md): repo invariants and build rules — only relevant when modifying the plugin itself, not when using it.

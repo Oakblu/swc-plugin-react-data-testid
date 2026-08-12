@@ -1,0 +1,44 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/Oakblu/plugin-react-data-testid-generator/master/schema/plugin-options.schema.json",
+  "title": "swc-plugin-react-data-testid options",
+  "description": "Options object passed as the second element of the SWC plugin tuple: [\"swc-plugin-react-data-testid\", { ... }]. Every option defaults to the behaviour that produces the most unique ids — a working setup needs no options at all. The flags exist only to turn inference off. Unknown or wrongly-typed fields fail the build with an explanatory error rather than being silently ignored.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "attributes": {
+      "type": "array",
+      "description": "Attribute names injected on every JSX element. All listed attributes are injected on each element, unless that specific attribute is already present in the source. An empty array disables the plugin.",
+      "items": { "type": "string" },
+      "default": ["data-testid"],
+      "examples": [["data-testid"], ["data-cy"], ["data-testid", "data-cy", "data-test-id"], []]
+    },
+    "autoIndex": {
+      "type": "boolean",
+      "description": "Append an index parameter to map callbacks that declare none, so every iterated element gets a distinct id. Set false only when a callee branches on the callback's Function.length, or to keep the static ids of 0.1.x.",
+      "default": true
+    },
+    "mapMethods": {
+      "type": "array",
+      "description": "Callee names treated as iteration. Narrow it to leave a name alone, or widen it to add your own iterator. Widening is safe: an inferred index is emitted guarded, so a callee that passes no index degrades to the plain static id.",
+      "items": { "type": "string" },
+      "default": ["map", "flatMap"],
+      "examples": [["map", "flatMap"], ["map"], ["map", "flatMap", "renderEach"]]
+    },
+    "collectionFirstMap": {
+      "type": "boolean",
+      "description": "Recognise the collection-first call shape f(collection, callback) — lodash `_.map`, `React.Children.map`, `$.map` — in addition to `items.map(callback)`.",
+      "default": true
+    },
+    "nestedIndexes": {
+      "type": "boolean",
+      "description": "Give an element inside nested map callbacks one id segment per level (\"Table.td-\" + r + \"-\" + c). Turning this off restores the pre-0.2.0 innermost-only id, which collides across outer iterations; it exists only for staged migration.",
+      "default": true
+    },
+    "manifestDir": {
+      "type": "string",
+      "description": "NOT SUPPORTED — setting this fails the build with an explanatory error. SWC runs Wasm plugins in a WASI sandbox with no preopened directories, so the plugin cannot write to disk. Remove the option to unblock your build.",
+      "deprecated": true
+    }
+  }
+}

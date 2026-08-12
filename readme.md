@@ -9,6 +9,38 @@
 
 ---
 
+## What it solves
+
+Writing `data-testid` by hand is tedious, gets skipped under deadline, and leaves tests
+reaching for CSS classes, DOM structure, or visible text — selectors that break on the
+next refactor or copy change. This plugin puts a test id on **every** JSX element at
+compile time, so:
+
+- Source files stay free of testing attributes; the compiled output carries them.
+- Ids are **deterministic from the source alone** — `LoginForm.button`,
+  `LoginForm.input2` — so a selector can be written without inspecting rendered DOM.
+- Elements rendered from a list get one id **per item** (`List.li-0`, `List.li-1`), not
+  one id shared by all of them.
+- Any hand-written `data-testid` already in the source is left untouched.
+
+Reach for it if you are looking for: automatic `data-testid` generation for React, build-time
+test id injection, stable Playwright/Cypress/Testing Library selectors, `data-cy` or
+`data-test-id` codegen, or a way to stop hand-writing test attributes across a codebase.
+
+**Requirements:** the project must be compiled by SWC — Next.js, Vite via
+`@vitejs/plugin-react-swc`, `@swc/jest`, `@swc/core`, or Rspack. SWC Wasm plugins load
+into SWC only, so a Babel-only toolchain cannot use this.
+
+**Using an AI assistant?** Point it at [`AGENTS.md`](./AGENTS.md) — the complete
+specification of the naming algorithm, precise enough to predict every generated id
+without running a build. [`llms.txt`](./llms.txt) indexes the docs, and
+[`schema/plugin-options.schema.json`](./schema/plugin-options.schema.json) defines every
+option in machine-readable form. All three ship inside the npm package, so they are also
+readable from `node_modules/swc-plugin-react-data-testid/` or over the CDN at
+`https://unpkg.com/swc-plugin-react-data-testid/AGENTS.md`.
+
+---
+
 ## Installation
 
 ```bash
@@ -274,7 +306,9 @@ export default () => (
 
 Every option defaults to the behaviour that produces the most unique ids. **You should not
 need to configure anything** — the flags exist to turn inference *off*, for a codebase
-migrating in stages or a callee the heuristics read wrongly.
+migrating in stages or a callee the heuristics read wrongly. A machine-readable definition
+of the whole options object lives in
+[`schema/plugin-options.schema.json`](./schema/plugin-options.schema.json).
 
 | Option               | Type       | Default              | Description                                              |
 | -------------------- | ---------- | -------------------- | -------------------------------------------------------- |

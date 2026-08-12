@@ -471,7 +471,10 @@ impl ReactDataTestIdTransform {
     }
 
     // Appends the index parameter, adding a placeholder first parameter when the
-    // callback declares none: `() => …` must become `(__testidItem0, __testidIdx1) => …`.
+    // callback declares none: `() => …` must become `(__testidItem2, __testidIdx1) => …`.
+    // The placeholder carries the *higher* counter value because the index was allocated
+    // before the callback was visited, while this placeholder is allocated now, after.
+    // Do not "fix" those digits to read 0, 1 — see tests/fixture/map-no-index-param.
     fn append_index_param(&mut self, callback: &mut Expr, index: Ident) {
         if Self::fn_params(callback).is_some_and(|p| p.is_empty()) {
             let placeholder = self.fresh_ident(ITEM_PARAM_BASE, callback);

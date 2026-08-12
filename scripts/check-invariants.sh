@@ -102,7 +102,53 @@ else
        "touch tests/fixture.rs && UPDATE=1 cargo test"
 fi
 
-# ── 6. Wasm target installed (cargo test alone cannot catch link errors) ───────
+# ── 6. Every plugin option is documented everywhere consumers (and agents) look ─
+# AGENTS.md sat a whole minor version behind src/lib.rs once: it still described
+# manifestDir as working and knew nothing about map indexes, so an agent reading it
+# predicted the wrong ids for every list item. Docs drift is invisible to cargo test.
+OPTS=$(awk '/pub struct PluginOptions/, /^}/' src/lib.rs \
+  | sed -n 's/^ *pub \([a-z_]*\):.*/\1/p' \
+  | awk -F_ '{ s=$1; for (i=2; i<=NF; i++) s = s toupper(substr($i,1,1)) substr($i,2); print s }')
+# Match the name in a *documenting* position, not merely anywhere in the prose: as a
+# backticked token in the markdown, and as a JSON key in the schema. A bare substring
+# search passes on any option whose name is also an ordinary English word — `attributes`
+# occurs dozens of times in both documents without ever being the option's entry.
+UNDOCUMENTED=""
+for opt in $OPTS; do
+  for doc in AGENTS.md readme.md; do
+    grep -q "\`$opt\`" "$doc" || UNDOCUMENTED="$UNDOCUMENTED $doc:$opt"
+  done
+  grep -q "\"$opt\" *:" schema/plugin-options.schema.json \
+    || UNDOCUMENTED="$UNDOCUMENTED schema:$opt"
+done
+if [ -z "$OPTS" ]; then
+  fail "could not read PluginOptions fields from src/lib.rs" \
+       "check the struct still matches the awk pattern in this script"
+elif [ -z "$UNDOCUMENTED" ]; then
+  pass "every PluginOptions field documented in AGENTS.md, readme.md and the JSON schema"
+else
+  fail "undocumented options:$UNDOCUMENTED" \
+       "document each option in the file listed, or remove it from PluginOptions"
+fi
+
+# ── 7. AI-discoverability files exist and are actually published ───────────────
+# These are what an agent reads when it finds the package: llms.txt indexes the docs,
+# AGENTS.md specifies the naming algorithm, the schema types the options. Listing a
+# missing path in package.json "files" is silent — npm just omits it from the tarball.
+MISSING_AI=""
+for f in llms.txt AGENTS.md schema/plugin-options.schema.json; do
+  [ -f "$f" ] || MISSING_AI="$MISSING_AI $f(absent)"
+  node -e "process.exit(require('./package.json').files.includes('$f') ? 0 : 1)" 2>/dev/null \
+    || MISSING_AI="$MISSING_AI $f(unpublished)"
+done
+if [ -z "$MISSING_AI" ]; then
+  pass "AI-facing docs present and listed in package.json files"
+else
+  fail "AI docs missing or not published:$MISSING_AI" \
+       "create the file, and add it to the \"files\" array in package.json"
+fi
+
+# ── 8. Wasm target installed (cargo test alone cannot catch link errors) ───────
 if rustup target list --installed 2>/dev/null | grep -q wasm32-wasip1; then
   pass "wasm32-wasip1 target installed"
 else
