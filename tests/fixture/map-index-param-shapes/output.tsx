@@ -16,7 +16,7 @@ const WithArray = ({ items }: {
 // static — the slot is occupied, so nothing is appended either.
 const Destructured = ({ items }: {
     items: string[];
-})=><ul data-testid="Destructured.ul">{items.map((item, [i])=><li data-testid="Destructured.li">{item}</li>)}</ul>;
+})=><ul data-testid="Destructured.ul">{items.map((item, [i])=><li data-testid={"Destructured.li" + (i === void 0 ? "" : "-" + i)}>{item}</li>)}</ul>;
 // A default on the *first* parameter still leaves the index slot free. A parameter with
 // no default may follow one that has a default — it only changes Function.length.
 const DefaultedItem = ({ items }: {

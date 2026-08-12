@@ -130,9 +130,14 @@ The plugin infers the index from whatever is available, in descending order of c
 | `$.map(items, (item) => …)`               | collection-first form | guarded                                                     |
 | `items.map((item) => …, this)`            | still `Array.prototype.map` | guarded                                              |
 | `items$.pipe(map((item) => …))`           | RxJS passes `(value, index)` | guarded                                             |
-| `R.map((item) => …, items)`               | ramda passes no index | guard collapses → plain `"List.li"` on every item           |
-| `items.map(renderItem)`                   | no callback literal   | static `"List.li"`; `renderItem` gets its own component ids |
-| `items.map((item, [i]) => …)`             | index slot destructured | static `"List.li"`                                        |
+| `R.map((item) => …, items)`               | ramda passes none → call-site counter | `{"List.li-" + __testidIdx1}` — unguarded, see below |
+| `R.map((item) => …)(items)`               | curried: no counter   | guard collapses → plain `"List.li"` on every item           |
+| `R.map((item, i) => …, items)`            | declared, callee passes none | `{"List.li-" + i}` → **`"List.li-undefined"`**; the declaration is the source's own assertion |
+| `items.map(renderItem)`                   | indexed at `renderItem`'s declaration in the same file | `{"renderItem.li" + (…guarded…)}` under renderItem's own component name |
+| `items.map(imported)`                     | declaration is in another file | static `"List.li"`                                    |
+| `items.map((item, [i]) => …)`             | first identifier the pattern binds | guarded `{"List.li" + (i === void 0 ? "" : "-" + i)}` |
+| `items.map((item, { index }) => …)`       | same, object pattern  | guarded                                                     |
+| `items.map((item, []) => …)`              | pattern binds nothing | static `"List.li"`                                          |
 
 **The guard.** An inferred index is always emitted defensively:
 
@@ -143,8 +148,44 @@ The plugin infers the index from whatever is available, in descending order of c
 If the callee really passes an index the value is `List.li-0`, identical to writing the
 index yourself; if it does not, the segment drops out to exactly `List.li`. A wrong guess
 can never produce `List.li-undefined`. The comparison is `=== void 0`, never truthiness —
-index `0` is falsy, and `_.map(object, cb)` passes a *string key*. An index the source
-declares is trusted and left unguarded.
+index `0` is falsy, and `_.map(object, cb)` passes a *string key*. Two sources are left
+unguarded: an index the source declares, and one bound by a call-site counter.
+
+**The call-site counter.** Where the callback is argument 0 *and* a collection argument
+follows it — the `R.map(fn, items)` shape — the appended parameter takes a default that
+reads a counter bound just outside the call:
+
+```jsx
+((__testidSeq0) => R.map((item, __testidIdx1 = __testidSeq0++) => (
+  <li data-testid={"List.li-" + __testidIdx1}/>
+), items))(0)
+```
+
+A parameter default is evaluated per invocation and only when the argument is `undefined`,
+so the binding holds the callee's index if there is one and the counter's otherwise —
+always a number, which is what licenses the unguarded segment. The counter is created by
+the wrapping arrow, so it resets every time the call runs. Two shapes are excluded: a
+curried `map(fn)` with no collection argument (the function it returns may be stored and
+reused, so the counter would drift), and any call containing `await` or `yield` (an arrow
+can do neither). Both fall back to the guarded appended index. `indexCounter: false`
+disables it.
+
+**Callbacks passed by reference.** `items.map(renderItem)` has no parameter list at the
+call site, so the names handed to map-like calls are collected in a pass of their own
+before anything is rewritten, and the index is added to the *declaration* — which may
+appear before the call, after it, or hoisted. Ids there use that function's own component
+name (`renderItem.li-0`). Every segment is guarded, including one the function declares
+itself: unlike a callback literal, a named function can also be called from elsewhere with
+no index at all. Two consequences worth predicting:
+
+- Matching is by **name**, not by binding — the plugin may run before the resolver, so
+  `SyntaxContext` cannot separate two same-named functions. Both are indexed if either is
+  used as a callback. A false match costs nothing, because the segment is guarded.
+- Appending to a *declaration* changes its arity for **every** caller, not just the map
+  call, so `Function.length` shifts wherever that function is passed around. It is still
+  only appended when a testid referenced it.
+
+`resolveCallbackRefs: false` disables it.
 
 **Nested callbacks** contribute one segment per level, so cells stay unique across rows:
 
@@ -178,6 +219,40 @@ a static id, because the index binding does not exist there:
 {[<Header key="h" />, ...items].map((item, i) => <li>{item}</li>)}
 // <Header> → "List.Header" (static)      <li> → {"List.li-" + i} (dynamic)
 ```
+
+## Per-instance ids (`instanceIds`, off by default)
+
+Ids are per component, so a component rendered twice repeats them: `<Badge/> <Badge/>`
+both yield `Badge.span`. With `instanceIds: true` a component instead prefixes its ids
+with the attribute value it was handed, which the parent is already injecting on the
+child element:
+
+```jsx
+const Badge = ({ "data-testid": __testidPrefix0, label }) => (
+  <span data-testid={(__testidPrefix0 || "Badge") + ".span"}>{label}</span>
+);
+// <Toolbar> renders two: Toolbar.Badge.span and Toolbar.Badge2.span
+// inside a map:           Rows.Badge-0.span, Rows.Badge-1.span, …
+```
+
+Rules for predicting the output:
+
+- The prefix prop is the **first configured attribute**.
+- The fallback is the component's own name, so a component that receives no prefix has
+  exactly the id it had with the option off. The test is `||`, not `=== void 0`: a prefix
+  is a string, and the only falsy string is one that must fall back too.
+- Where the prefix comes from, by the component's first parameter:
+  `props` → `props && props["data-testid"]` (the `&&` guards a call with no props at all);
+  an object pattern → one property is inserted **first**, so a rest element stays last;
+  a pattern that already destructures the prop → that binding is reused;
+  no parameter at all → `({ "data-testid": p } = {})` is appended, defaulted so calling the
+  function with no argument still cannot throw.
+- A class component reads `this.props`, except inside a `function` expression, where
+  `this` is something else — those elements keep the static component-name prefix.
+- A function reached by reference from a map call (`items.map(row)`) takes an index, never
+  a prefix: its first argument is the item, not props.
+- The parameter is written back only if an id referenced it, so a component whose elements
+  all carry hand-written attributes keeps its signature.
 
 ## Skip conditions
 
@@ -221,6 +296,9 @@ Passed as the second element of the plugin tuple. Machine-readable definitions:
 | `mapMethods`         | `string[]` | `["map", "flatMap"]` | Callee names treated as iteration. Widening is safe — the guard handles callees that pass no index |
 | `collectionFirstMap` | `boolean`  | `true`               | Recognise `f(collection, callback)` — `_.map`, `Children.map`, `$.map`                          |
 | `nestedIndexes`      | `boolean`  | `true`               | One id segment per nested callback level. Turning it off makes nested ids collide               |
+| `resolveCallbackRefs`| `boolean`  | `true`               | Index a function passed by reference (`items.map(row)`) at its declaration in the same file     |
+| `indexCounter`       | `boolean`  | `true`               | Supply an index from a call-site counter where the callee passes none (`R.map(fn, items)`)      |
+| `instanceIds`        | `boolean`  | **`false`**          | Prefix a component's ids with the one its parent passed down, so two instances differ. The only option that is off by default: it changes every nested id |
 | `manifestDir`        | `string`   | —                    | **Not supported — fails the build.** SWC runs Wasm plugins in a WASI sandbox with no preopened directories, so nothing can be written to disk |
 
 ```json
@@ -232,12 +310,15 @@ A config that cannot be deserialized — most often a value of the wrong type, l
 Deserialization is all-or-nothing, so one mistyped field would otherwise silently discard
 every option set alongside it.
 
-Setting the four inference flags to their non-default values reproduces the 0.1.x id
+Setting the six inference flags to their non-default values reproduces the 0.1.x id
 scheme exactly:
 
 ```json
-{ "autoIndex": false, "collectionFirstMap": false, "nestedIndexes": false, "mapMethods": ["map"] }
+{ "autoIndex": false, "collectionFirstMap": false, "nestedIndexes": false, "mapMethods": ["map"], "resolveCallbackRefs": false, "indexCounter": false }
 ```
+
+`instanceIds` is the only option that must be switched **on**. It rewrites ids that
+already work, so it cannot be a default — see *Per-instance ids* below.
 
 ## Predicting ids — worked example
 
@@ -288,9 +369,10 @@ Guidance that avoids the common failure modes:
 - If an element already had a hand-written `data-testid`, target *that* value — the plugin
   left it alone.
 - Duplicate ids are legal HTML but break `getByTestId`, which expects a single match. If
-  two elements collide, either the component is rendered more than once or the iteration
-  form gave the plugin nothing to index (`items.map(renderItem)`); set the attribute by
-  hand in that case.
+  two elements collide, either the component is rendered more than once (turn on
+  `instanceIds`, or set the attribute by hand) or the iteration form gave the plugin
+  nothing to index — a callback imported from another file, or a pattern in the index slot
+  that binds nothing.
 - Ids change when elements are added or reordered within a component, since the counter is
   positional. Treat them as build artefacts, not as a stable public API.
 

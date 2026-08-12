@@ -1,11 +1,14 @@
-// Shapes where NOTHING dynamic can be emitted: there is no callback body to read an
+// Shapes where NOTHING dynamic can be emitted: there is nothing in the file to read an
 // index from, or no attribute to write. Every element here keeps a static id.
 //
 // Shapes where the callee *might* not pass an index are a different case — those are
 // inferred with a guarded segment; see fixture map-uncertain-callees.
 
-// 1. A callback passed by reference: there is no parameter list, and any JSX lives in
-//    renderItem, which gets ids under its own component name.
+// 1. A callback passed by reference to a function this file does not declare. The
+//    declaration is where an index would be added (see fixture map-callback-refs), and
+//    an imported one is out of reach — so this call site is left alone entirely.
+import { renderItem } from "./render-item";
+
 const ByReference = ({ items }: { items: string[] }) => (
   <ul>{items.map(renderItem)}</ul>
 );
@@ -19,10 +22,4 @@ const NoJsx = ({ items }: { items: string[] }) => (
 //    index and none is appended.
 const AlreadyTagged = ({ items }: { items: string[] }) => (
   <ul>{items.map((item) => <li data-testid="custom">{item}</li>)}</ul>
-);
-
-// 4. A destructured second parameter binds no single identifier to reference, and the
-//    slot is occupied so nothing can be appended.
-const Destructured = ({ items }: { items: string[] }) => (
-  <ul>{items.map((item, [i]) => <li>{item}</li>)}</ul>
 );

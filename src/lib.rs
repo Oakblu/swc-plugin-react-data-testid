@@ -21,6 +21,15 @@ const MAP_METHODS: [&str; 2] = ["map", "flatMap"];
 // by a per-file counter plus a scan of the callback (see fresh_ident).
 const INDEX_PARAM_BASE: &str = "__testidIdx";
 const ITEM_PARAM_BASE: &str = "__testidItem";
+// Base name for the per-call-site counter that supplies an index when the callee turns
+// out not to pass one (see counter_call_site).
+const SEQ_PARAM_BASE: &str = "__testidSeq";
+// Base name for the binding that receives an instance prefix from the parent's
+// `data-testid` prop (instanceIds).
+const PREFIX_PARAM_BASE: &str = "__testidPrefix";
+// The prop a parent passes down to prefix a child instance's ids is the first configured
+// attribute — the one the plugin already injects on the child element, so nothing extra
+// has to be wired up. See prefix_prop().
 
 // Derives a PascalCase component name from a file path.
 // Returns None for paths with no extension, multi-dot base names (e.g. "index.test"),
@@ -59,6 +68,17 @@ pub struct PluginOptions {
     // true. Set false for the pre-0.2.0 innermost-only id, which repeats across outer
     // iterations — it makes ids collide, so it exists only for staged migration.
     pub nested_indexes: Option<bool>,
+    // Index a function that is only *referenced* as a map callback (`items.map(row)`)
+    // by looking up its declaration in the same file. Defaults to true.
+    pub resolve_callback_refs: Option<bool>,
+    // Supply an index from a call-site counter when the callee passes none —
+    // `R.map(fn, items)`. Defaults to true. See counter_call_site.
+    pub index_counter: Option<bool>,
+    // Prefix a component's ids with the `data-testid` it received from its parent, so
+    // two instances of the same component do not repeat ids. Defaults to FALSE: it
+    // changes every nested id from `Badge.span` to `List.Badge-0.span`, which is a
+    // breaking change for existing selectors.
+    pub instance_ids: Option<bool>,
 }
 
 // How this level's index is reached from inside the callback.
@@ -66,17 +86,31 @@ enum IndexSource {
     // A parameter the source declares: `(item, i) => …`. Always bound, so the id needs
     // no guard, and the compact `{"List.li-" + i}` form is used.
     Declared(Ident),
+    // An identifier bound by a destructuring pattern in the index slot:
+    // `(item, [i]) => …` or `(item, { index }) => …`. The slot is occupied so nothing
+    // can be appended, but the pattern does bind something to reference. Whether that
+    // binding holds an index is a guess, so the segment is guarded.
+    Destructured(Ident),
     // An element of a rest parameter: `(...args) => …` reads `args[1]`. No signature
     // change is needed, but the element may be absent, so the segment is guarded.
     RestElement { rest: Ident, position: f64 },
     // A parameter the plugin appends, written back only if a testid referenced it.
     Appended(Ident),
+    // An appended parameter whose *default* reads a call-site counter:
+    // `(item, __testidIdx0 = __testidSeq0++) => …`. The default runs only when the
+    // callee passed nothing, so the binding always holds a number and the segment
+    // needs no guard. See counter_call_site for when this is available.
+    Counted(Ident),
 }
 
 // One enclosing map-like callback's index, and how the id refers to it.
 struct MapIndex {
     source: IndexSource,
     used: bool,
+    // Forces a guard on a source that would otherwise be trusted. A function that is
+    // merely *referenced* as a callback (`items.map(row)`) can also be called from
+    // anywhere else with no index at all, so even a parameter it declares is a guess.
+    force_guard: bool,
 }
 
 impl MapIndex {
@@ -85,7 +119,10 @@ impl MapIndex {
         match &self.source {
             // Clone the binding's Ident verbatim so sym *and* SyntaxContext match the
             // parameter. A fresh IdentName would carry an empty ctxt and not resolve.
-            IndexSource::Declared(id) | IndexSource::Appended(id) => Expr::Ident(id.clone()),
+            IndexSource::Declared(id)
+            | IndexSource::Destructured(id)
+            | IndexSource::Appended(id)
+            | IndexSource::Counted(id) => Expr::Ident(id.clone()),
             IndexSource::RestElement { rest, position } => Expr::Member(MemberExpr {
                 span: DUMMY_SP,
                 obj: Box::new(Expr::Ident(rest.clone())),
@@ -101,16 +138,81 @@ impl MapIndex {
         }
     }
 
-    // Whether the emitted segment must survive the index being absent at runtime.
-    // Only a parameter the source itself declares is taken on trust.
+    // Whether the emitted segment must survive the index being absent at runtime. Two
+    // sources are exempt: a parameter the source itself declares directly on the
+    // callback literal, and one whose default supplies a counter — that one is bound by
+    // construction, whatever the callee does.
     fn needs_guard(&self) -> bool {
-        !matches!(self.source, IndexSource::Declared(_))
+        if self.force_guard {
+            return true;
+        }
+        !matches!(
+            self.source,
+            IndexSource::Declared(_) | IndexSource::Counted(_)
+        )
     }
 }
 
 // Which argument of a map-like call holds the callback.
 struct MapCallSite {
     arg_index: usize,
+}
+
+// A mutable view of a parameter list, so the same rules apply whether the function is a
+// callback literal, a declaration, or a class method.
+enum ParamsMut<'a> {
+    Arrow(&'a mut ArrowExpr),
+    Fn(&'a mut Function),
+}
+
+impl ParamsMut<'_> {
+    fn first_pat_mut(&mut self) -> Option<&mut Pat> {
+        match self {
+            ParamsMut::Arrow(arrow) => arrow.params.first_mut(),
+            ParamsMut::Fn(function) => function.params.first_mut().map(|p| &mut p.pat),
+        }
+    }
+
+    fn push(&mut self, pat: Pat) {
+        match self {
+            ParamsMut::Arrow(arrow) => arrow.params.push(pat),
+            ParamsMut::Fn(function) => function.params.push(Param {
+                span: DUMMY_SP,
+                decorators: Vec::new(),
+                pat,
+            }),
+        }
+    }
+}
+
+// Parameters the plugin owes a function once its body has been visited. Both are added
+// only when an id actually referenced them, so a component or callback whose JSX needed
+// nothing keeps the signature its author wrote.
+#[derive(Default)]
+struct Writeback {
+    // A props parameter for a component that declared none: `({ "data-testid": p }) => …`
+    prefix_param: Option<Pat>,
+    // A stand-in for the item parameter, so an index lands in the second slot even when
+    // the function declares no parameters at all.
+    placeholder_param: Option<Pat>,
+    // An index parameter for a function referenced as a map callback.
+    index_param: Option<Pat>,
+}
+
+impl Writeback {
+    fn is_empty(&self) -> bool {
+        self.prefix_param.is_none() && self.index_param.is_none()
+    }
+
+    // The prefix parameter goes first (it is the props argument); the index goes last.
+    fn apply(self, params: &mut ParamsMut) {
+        for pat in [self.prefix_param, self.placeholder_param, self.index_param]
+            .into_iter()
+            .flatten()
+        {
+            params.push(pat);
+        }
+    }
 }
 
 // Collects identifier names (and the first SyntaxContext seen) from a subtree.
@@ -124,6 +226,142 @@ impl Visit for IdentScan {
     fn visit_ident(&mut self, n: &Ident) {
         self.first_ctxt.get_or_insert(n.ctxt);
         self.syms.insert(n.sym.to_string());
+    }
+}
+
+// Finds `await` / `yield` that belong to the *enclosing* function, so a call containing
+// one is never wrapped in the counter arrow — `(c => await x)(0)` does not parse, and an
+// arrow cannot yield. An await inside a nested function is that function's business, so
+// traversal stops at every function boundary.
+#[derive(Default)]
+struct SuspendScan {
+    found: bool,
+}
+
+impl Visit for SuspendScan {
+    fn visit_await_expr(&mut self, _: &AwaitExpr) {
+        self.found = true;
+    }
+    fn visit_yield_expr(&mut self, _: &YieldExpr) {
+        self.found = true;
+    }
+    fn visit_arrow_expr(&mut self, _: &ArrowExpr) {}
+    fn visit_function(&mut self, _: &Function) {}
+}
+
+// Collects the names of identifiers handed to a map-like call *by reference*
+// (`items.map(renderItem)`), so the function they name can be indexed where it is
+// declared. Matching is by name alone: the plugin runs before the resolver in some
+// hosts, so SyntaxContext cannot be relied on to tell two same-named bindings apart.
+// A false match costs nothing — the segment it produces is guarded.
+struct CallbackRefScan<'a> {
+    map_methods: &'a [String],
+    collection_first: bool,
+    names: HashSet<String>,
+}
+
+impl Visit for CallbackRefScan<'_> {
+    fn visit_call_expr(&mut self, n: &CallExpr) {
+        if let Callee::Expr(callee) = &n.callee {
+            let named = |sym: &str| self.map_methods.iter().any(|m| m == sym);
+            let is_map_name = match callee.as_ref() {
+                Expr::Member(m) => matches!(&m.prop, MemberProp::Ident(i) if named(&i.sym)),
+                Expr::Ident(i) => named(&i.sym),
+                _ => false,
+            };
+            if is_map_name {
+                // Same argument positions as map_call_site: `items.map(fn)` and, when
+                // the collection-first shape is enabled, `_.map(items, fn)`.
+                let mut positions = vec![0];
+                if self.collection_first && n.args.len() >= 2 {
+                    positions.push(1);
+                }
+                for position in positions {
+                    if let Some(arg) = n.args.get(position) {
+                        if arg.spread.is_none() {
+                            if let Expr::Ident(id) = arg.expr.as_ref() {
+                                self.names.insert(id.sym.to_string());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        n.visit_children_with(self);
+    }
+}
+
+// Where a component's instance prefix comes from, and what has to be written back into
+// its parameter list if an id ends up using it.
+enum PrefixBinding {
+    // A props parameter that already binds an identifier: `(props) => …`, read as
+    // `props["data-testid"]`. Nothing to write back.
+    Props(Ident),
+    // A binding in the props object pattern — either one the component already
+    // destructured, or one the plugin adds (ComponentScope::prefix_insert) if an id
+    // ends up referencing it.
+    Destructured(Ident),
+    // The component declares no parameter at all, so one is appended:
+    // `({ "data-testid": __testidPrefix0 }) => …`.
+    NewParam(Ident),
+    // A class component reads this.props.
+    ThisProps,
+}
+
+// The prefix in force for the component currently being visited (instanceIds only).
+struct InstancePrefix {
+    binding: PrefixBinding,
+    used: bool,
+}
+
+impl InstancePrefix {
+    // Expression that evaluates to the prefix the parent passed, or a falsy value when
+    // it passed none. A member read is guarded with `&&` because a component function
+    // called directly — a helper, a test — may get no props object at all.
+    fn expr(&self, prop: &str) -> Expr {
+        fn read(obj: Expr, prop: &str) -> Expr {
+            let member = Expr::Member(MemberExpr {
+                span: DUMMY_SP,
+                obj: Box::new(obj.clone()),
+                prop: MemberProp::Computed(ComputedPropName {
+                    span: DUMMY_SP,
+                    expr: Box::new(Expr::Lit(Lit::Str(Str {
+                        span: DUMMY_SP,
+                        value: prop.into(),
+                        raw: None,
+                    }))),
+                }),
+            });
+            Expr::Bin(BinExpr {
+                span: DUMMY_SP,
+                op: BinaryOp::LogicalAnd,
+                left: Box::new(obj),
+                right: Box::new(member),
+            })
+        }
+        match &self.binding {
+            PrefixBinding::Props(id) => read(Expr::Ident(id.clone()), prop),
+            PrefixBinding::Destructured(ident) | PrefixBinding::NewParam(ident) => {
+                Expr::Ident(ident.clone())
+            }
+            PrefixBinding::ThisProps => read(
+                Expr::Member(MemberExpr {
+                    span: DUMMY_SP,
+                    obj: Box::new(Expr::This(ThisExpr { span: DUMMY_SP })),
+                    prop: MemberProp::Ident(IdentName {
+                        span: DUMMY_SP,
+                        sym: "props".into(),
+                    }),
+                }),
+                prop,
+            ),
+        }
+    }
+
+    // `this` inside a function expression is not the class instance, so a class
+    // component's prefix cannot be read from there.
+    fn reads_this(&self) -> bool {
+        matches!(self.binding, PrefixBinding::ThisProps)
     }
 }
 
@@ -152,6 +390,15 @@ pub struct ReactDataTestIdTransform {
     next_generated_id: u32,
     // Owned default for `mapMethods`, so map_methods() can hand out a slice either way.
     default_map_methods: Vec<String>,
+    // Names handed to a map-like call by reference (`items.map(row)`), collected in one
+    // pass over the program before anything is rewritten — the declaration may appear
+    // after the call site, or be hoisted above it.
+    referenced_callbacks: HashSet<String>,
+    // The instance prefix of the component being visited (instanceIds only).
+    instance_prefix: Option<InstancePrefix>,
+    // Depth of function expressions entered inside the current component. A function
+    // expression rebinds `this`, so a class component's prefix is unreadable inside one.
+    fn_expr_depth: u32,
 }
 
 impl ReactDataTestIdTransform {
@@ -173,6 +420,9 @@ impl ReactDataTestIdTransform {
             map_indices: Vec::new(),
             next_generated_id: 0,
             default_map_methods: MAP_METHODS.iter().map(|m| m.to_string()).collect(),
+            referenced_callbacks: HashSet::new(),
+            instance_prefix: None,
+            fn_expr_depth: 0,
         }
     }
 
@@ -252,8 +502,13 @@ impl ReactDataTestIdTransform {
     //
     // The test is strictly against `undefined`, not a truthiness or numeric check:
     // `_.map(someObject, cb)` passes a *string* key, and index `0` is falsy.
+    //
+    // `prefix_expr` is the instance prefix (instanceIds): a leading expression that
+    // already evaluates to a string in both of its branches, so it can head the
+    // concatenation without breaking the "+ is always string concat" invariant.
     fn make_dynamic_attr(
         attr_name: &str,
+        prefix_expr: Option<Expr>,
         prefix: &str,
         segments: &[(Expr, bool)],
     ) -> JSXAttrOrSpread {
@@ -285,9 +540,12 @@ impl ReactDataTestIdTransform {
             }
         }
 
-        // The leading string literal makes every following `+` a string concatenation,
-        // so numeric indices never sum.
-        let mut parts = vec![Part::Text(prefix.to_string())];
+        // The leading string makes every following `+` a string concatenation, so
+        // numeric indices never sum.
+        let mut parts = match prefix_expr {
+            Some(expr) => vec![Part::Node(Box::new(expr)), Part::Text(prefix.to_string())],
+            None => vec![Part::Text(prefix.to_string())],
+        };
         for (index_expr, guarded) in segments {
             let reference = || Box::new(index_expr.clone());
             if *guarded {
@@ -321,7 +579,8 @@ impl ReactDataTestIdTransform {
             Part::Node(n) => n,
         };
         let mut parts = parts.into_iter();
-        // The first part is always the prefix text, so the fold starts from a literal.
+        // The first part is always the prefix — a literal, or the instance-prefix
+        // expression, which is a string in both branches.
         let mut expr = parts.next().map(node).unwrap_or_else(|| lit(String::new()));
         for part in parts {
             expr = concat(expr, node(part));
@@ -384,6 +643,81 @@ impl ReactDataTestIdTransform {
         None
     }
 
+    // Whether this call site can be given a counter to number its items with, for the
+    // case where the callee turns out to pass no index at all — `R.map(fn, items)`.
+    //
+    // Two conditions, and both are about *soundness*, not about guessing the library:
+    //
+    // 1. The callback is argument 0 and the call has further arguments. That is the
+    //    ramda/lodash-fp order — and, importantly, it is NOT the curried shape
+    //    `map(fn)`, where the call evaluates once and the function it returns may be
+    //    stored and reused. A counter created there would keep counting across every
+    //    later use and drift away from the item positions. With a collection argument
+    //    present, the call iterates now, and the counter lives exactly as long as the
+    //    iteration. (The collection-first shape `_.map(items, fn)` needs no counter:
+    //    every callee that takes it passes an index or a key.)
+    //
+    // 2. Nothing in the call awaits or yields, since the counter binding is introduced
+    //    by an arrow wrapped around the call, and an arrow can do neither.
+    //
+    // The counter is what makes the segment *unguarded*: whatever the callee does, the
+    // parameter's default leaves it bound to a number.
+    fn counter_call_site(&self, n: &CallExpr, site: &MapCallSite) -> bool {
+        if !self.index_counter_enabled() || !self.auto_index_enabled() || site.arg_index != 0 {
+            return false;
+        }
+        if n.args.len() < 2 {
+            return false;
+        }
+        let mut scan = SuspendScan::default();
+        n.visit_with(&mut scan);
+        !scan.found
+    }
+
+    // `((counter) => call)(0)`
+    fn wrap_in_counter(call: CallExpr, counter: Ident) -> CallExpr {
+        let arrow = Expr::Arrow(ArrowExpr {
+            span: DUMMY_SP,
+            ctxt: SyntaxContext::default(),
+            params: vec![Self::binding_pat(counter)],
+            body: Box::new(BlockStmtOrExpr::Expr(Box::new(Expr::Call(call)))),
+            is_async: false,
+            is_generator: false,
+            type_params: None,
+            return_type: None,
+        });
+        CallExpr {
+            span: DUMMY_SP,
+            ctxt: SyntaxContext::default(),
+            // Parenthesised explicitly: an arrow in callee position needs it, and the
+            // plugin's output is not passed through SWC's fixer pass.
+            callee: Callee::Expr(Box::new(Expr::Paren(ParenExpr {
+                span: DUMMY_SP,
+                expr: Box::new(arrow),
+            }))),
+            args: vec![ExprOrSpread {
+                spread: None,
+                expr: Box::new(Expr::Lit(Lit::Num(Number {
+                    span: DUMMY_SP,
+                    value: 0.0,
+                    raw: None,
+                }))),
+            }],
+            type_args: None,
+        }
+    }
+
+    // A placeholder to swap a call out of the tree with; never reaches the output.
+    fn empty_call() -> CallExpr {
+        CallExpr {
+            span: DUMMY_SP,
+            ctxt: SyntaxContext::default(),
+            callee: Callee::Expr(Box::new(Expr::Invalid(Invalid { span: DUMMY_SP }))),
+            args: Vec::new(),
+            type_args: None,
+        }
+    }
+
     // Parameter patterns of a function literal, in source order.
     fn fn_params(callback: &Expr) -> Option<Vec<&Pat>> {
         match callback {
@@ -393,26 +727,64 @@ impl ReactDataTestIdTransform {
         }
     }
 
+    // Same, for a function that is not an expression — a declaration or a method. Every
+    // parameter rule below applies equally to a function only *referenced* as a callback.
+    fn params_of_fn(function: &Function) -> Vec<&Pat> {
+        function.params.iter().map(|p| &p.pat).collect()
+    }
+
+    // Unwraps whatever single identifier a parameter binds directly. A default value is
+    // transparent: `(item, index = 0) => …` still binds `index`, and the default only
+    // applies when the callee passes nothing — exactly the case where the guarded
+    // segment emitted by make_dynamic_attr would have dropped out anyway.
+    fn param_ident(pat: &Pat) -> Option<Ident> {
+        match pat {
+            Pat::Ident(binding) => Some(binding.id.clone()),
+            Pat::Assign(assign) => Self::param_ident(&assign.left),
+            _ => None,
+        }
+    }
+
     // The index parameter the source already declares, if it binds a plain identifier.
-    // A default value is unwrapped: `(item, index = 0) => …` still binds `index`, and the
-    // default only applies when the callee passes nothing — exactly the case where the
-    // guarded segment emitted by make_dynamic_attr would have dropped out anyway.
-    fn declared_index_ident(callback: &Expr) -> Option<Ident> {
-        fn ident_of(pat: &Pat) -> Option<Ident> {
+    fn declared_index_ident_from(params: &[&Pat]) -> Option<Ident> {
+        Self::param_ident(params.get(1)?)
+    }
+
+    // The index slot holds a destructuring pattern: `(item, [i]) => …`. Nothing can be
+    // appended — the slot is taken — but the pattern does bind identifiers, and the
+    // first one is what the source pulled out of that argument. Referencing it is a
+    // guess about the callee, so the segment is guarded and a wrong guess degrades to
+    // the static id. A pattern that binds nothing at all (`(item, []) => …`) yields None.
+    fn destructured_index_ident_from(params: &[&Pat]) -> Option<Ident> {
+        // Only binding positions are considered. A default *value* is an arbitrary
+        // expression that may itself contain functions, and identifiers in there are
+        // not bound by this parameter.
+        fn first_binding(pat: &Pat) -> Option<Ident> {
             match pat {
                 Pat::Ident(binding) => Some(binding.id.clone()),
-                Pat::Assign(assign) => ident_of(&assign.left),
+                Pat::Assign(assign) => first_binding(&assign.left),
+                Pat::Rest(rest) => first_binding(&rest.arg),
+                Pat::Array(array) => array.elems.iter().flatten().find_map(first_binding),
+                Pat::Object(object) => object.props.iter().find_map(|prop| match prop {
+                    ObjectPatProp::KeyValue(kv) => first_binding(&kv.value),
+                    ObjectPatProp::Assign(assign) => Some(assign.key.id.clone()),
+                    ObjectPatProp::Rest(rest) => first_binding(&rest.arg),
+                }),
                 _ => None,
             }
         }
-        ident_of(Self::fn_params(callback)?.get(1)?)
+        let pat = params.get(1)?;
+        // A plain identifier is the Declared case and must not be re-routed here.
+        if Self::param_ident(pat).is_some() {
+            return None;
+        }
+        first_binding(pat)
     }
 
     // A rest parameter collects the index instead of naming it: `(...args) => …` reads it
     // as `args[1]`, and `(item, ...rest) => …` as `rest[0]`. Nothing may be appended after
     // a rest element, but nothing needs to be — the index is already in scope.
-    fn rest_index_source(callback: &Expr) -> Option<IndexSource> {
-        let params = Self::fn_params(callback)?;
+    fn rest_index_source_from(params: &[&Pat]) -> Option<IndexSource> {
         // Only positions 0 and 1 can hold the index; a rest element later collects
         // arguments from position 2 onward, which is the collection, not the index.
         for (position, pat) in params.iter().enumerate().take(2) {
@@ -430,13 +802,8 @@ impl ReactDataTestIdTransform {
 
     // A callback can take an appended index parameter only when it declares fewer than
     // two parameters and none is a rest element — nothing may follow `...rest`.
-    fn can_take_index_param(callback: &Expr) -> bool {
-        match Self::fn_params(callback) {
-            Some(params) => {
-                params.len() < 2 && !params.iter().any(|p| matches!(p, Pat::Rest(_)))
-            }
-            None => false,
-        }
+    fn can_take_index_param_from(params: &[&Pat]) -> bool {
+        params.len() < 2 && !params.iter().any(|p| matches!(p, Pat::Rest(_)))
     }
 
     // SyntaxContext of the callback's own parameter scope, so an appended binding is
@@ -444,11 +811,16 @@ impl ReactDataTestIdTransform {
     // empty context when the callback declares no identifier parameters to copy from;
     // binding and reference still agree, which is what hygiene and minifiers require.
     fn params_ctxt(callback: &Expr) -> SyntaxContext {
+        match Self::fn_params(callback) {
+            Some(params) => Self::params_ctxt_from(&params),
+            None => SyntaxContext::default(),
+        }
+    }
+
+    fn params_ctxt_from(params: &[&Pat]) -> SyntaxContext {
         let mut scan = IdentScan::default();
-        if let Some(params) = Self::fn_params(callback) {
-            for param in params {
-                param.visit_with(&mut scan);
-            }
+        for param in params {
+            param.visit_with(&mut scan);
         }
         scan.first_ctxt.unwrap_or_default()
     }
@@ -458,9 +830,17 @@ impl ReactDataTestIdTransform {
     // distinct across nested callbacks, where scanning an inner callback cannot yet see
     // an outer generated name — its references are only added later in the traversal.
     fn fresh_ident(&mut self, base: &str, callback: &Expr) -> Ident {
+        self.fresh_ident_in(base, callback, Self::params_ctxt(callback))
+    }
+
+    // Same, over an arbitrary node: the binding a counter introduces lives *outside* the
+    // callback, so its name has to avoid every identifier in the whole call expression.
+    fn fresh_ident_in<N>(&mut self, base: &str, node: &N, ctxt: SyntaxContext) -> Ident
+    where
+        N: VisitWith<IdentScan>,
+    {
         let mut scan = IdentScan::default();
-        callback.visit_with(&mut scan);
-        let ctxt = Self::params_ctxt(callback);
+        node.visit_with(&mut scan);
         loop {
             let name = format!("{}{}", base, self.next_generated_id);
             self.next_generated_id += 1;
@@ -470,33 +850,67 @@ impl ReactDataTestIdTransform {
         }
     }
 
+    fn append_index_param(&mut self, callback: &mut Expr, index: Ident) {
+        self.append_index_pat(callback, Self::binding_pat(index));
+    }
+
+    // The counter form: `(item, __testidIdx0 = __testidSeq0++) => …`. A default is
+    // evaluated per call and only when the argument is `undefined`, which makes it an
+    // exact fit for "use the callee's index if there is one, otherwise number the items
+    // myself". It also keeps the callback's `Function.length` unchanged, where a plain
+    // appended parameter would raise it.
+    fn append_counted_index_param(&mut self, callback: &mut Expr, index: Ident, counter: Ident) {
+        let pat = Pat::Assign(AssignPat {
+            span: DUMMY_SP,
+            left: Box::new(Self::binding_pat(index)),
+            right: Box::new(Expr::Update(UpdateExpr {
+                span: DUMMY_SP,
+                op: UpdateOp::PlusPlus,
+                prefix: false,
+                arg: Box::new(Expr::Ident(counter)),
+            })),
+        });
+        self.append_index_pat(callback, pat);
+    }
+
     // Appends the index parameter, adding a placeholder first parameter when the
     // callback declares none: `() => …` must become `(__testidItem2, __testidIdx1) => …`.
     // The placeholder carries the *higher* counter value because the index was allocated
     // before the callback was visited, while this placeholder is allocated now, after.
     // Do not "fix" those digits to read 0, 1 — see tests/fixture/map-no-index-param.
-    fn append_index_param(&mut self, callback: &mut Expr, index: Ident) {
+    fn append_index_pat(&mut self, callback: &mut Expr, index: Pat) {
         if Self::fn_params(callback).is_some_and(|p| p.is_empty()) {
             let placeholder = self.fresh_ident(ITEM_PARAM_BASE, callback);
             Self::push_param(callback, placeholder);
         }
-        Self::push_param(callback, index);
+        Self::push_pat_param(callback, index);
+    }
+
+    fn binding_pat(ident: Ident) -> Pat {
+        Pat::Ident(BindingIdent {
+            id: ident,
+            type_ann: None,
+        })
     }
 
     fn push_param(callback: &mut Expr, ident: Ident) {
-        let pat = Pat::Ident(BindingIdent {
-            id: ident,
-            type_ann: None,
-        });
+        Self::push_pat_param(callback, Self::binding_pat(ident));
+    }
+
+    fn push_pat_param(callback: &mut Expr, pat: Pat) {
         match callback {
             Expr::Arrow(arrow) => arrow.params.push(pat),
-            Expr::Fn(fn_expr) => fn_expr.function.params.push(Param {
-                span: DUMMY_SP,
-                decorators: Vec::new(),
-                pat,
-            }),
+            Expr::Fn(fn_expr) => Self::push_fn_param(&mut fn_expr.function, pat),
             _ => {}
         }
+    }
+
+    fn push_fn_param(function: &mut Function, pat: Pat) {
+        function.params.push(Param {
+            span: DUMMY_SP,
+            decorators: Vec::new(),
+            pat,
+        });
     }
 
     fn auto_index_enabled(&self) -> bool {
@@ -509,6 +923,30 @@ impl ReactDataTestIdTransform {
 
     fn nested_indexes_enabled(&self) -> bool {
         self.options.nested_indexes.unwrap_or(true)
+    }
+
+    fn resolve_callback_refs_enabled(&self) -> bool {
+        self.options.resolve_callback_refs.unwrap_or(true)
+    }
+
+    fn index_counter_enabled(&self) -> bool {
+        self.options.index_counter.unwrap_or(true)
+    }
+
+    // The one option that is off by default: it rewrites `Badge.span` to
+    // `List.Badge-0.span`, so every existing selector for a nested component changes.
+    fn instance_ids_enabled(&self) -> bool {
+        self.options.instance_ids.unwrap_or(false)
+    }
+
+    // The prop a parent uses to hand an instance prefix to a child. The plugin already
+    // injects the configured attributes on the child element, so the first of them is
+    // the prefix that arrived — no separate prop, and no wiring for the user.
+    fn prefix_prop(&self) -> String {
+        self.attributes()
+            .first()
+            .cloned()
+            .unwrap_or_else(|| DEFAULT_ATTRIBUTE.to_string())
     }
 
     fn map_methods(&self) -> &[String] {
@@ -536,6 +974,44 @@ impl ReactDataTestIdTransform {
             self.generated_testids.push(test_id.clone());
         }
 
+        // With instanceIds, the component part of the id is whatever prefix the parent
+        // passed down, falling back to the component's own name when it rendered at the
+        // top level (or was rendered by something the plugin did not touch). `||` is the
+        // right test here where an index needs `=== void 0`: a prefix is a string, and
+        // the only falsy string — "" — is exactly the case that must fall back too.
+        let prefix_expr = self.instance_prefix.as_ref().and_then(|prefix| {
+            // `this` is not the class instance inside a function expression.
+            if prefix.reads_this() && self.fn_expr_depth > 0 {
+                return None;
+            }
+            Some(Expr::Bin(BinExpr {
+                span: DUMMY_SP,
+                op: BinaryOp::LogicalOr,
+                left: Box::new(prefix.expr(&self.prefix_prop())),
+                right: Box::new(Expr::Lit(Lit::Str(Str {
+                    span: DUMMY_SP,
+                    value: component.as_str().into(),
+                    raw: None,
+                }))),
+            }))
+        });
+        // Only mark the prefix used once we know an attribute will actually reference it.
+        let uses_prefix = prefix_expr.is_some()
+            && attributes
+                .iter()
+                .any(|attr_name| !Self::has_attribute(&opening.attrs, attr_name));
+        if uses_prefix {
+            if let Some(prefix) = self.instance_prefix.as_mut() {
+                prefix.used = true;
+            }
+        }
+        // The static part that follows the prefix: ".span" when a prefix expression
+        // supplies the component name, "Comp.span" when it does not.
+        let static_part = match prefix_expr {
+            Some(_) => format!(".{}", unique_id),
+            None => test_id.clone(),
+        };
+
         for attr_name in attributes {
             if !Self::has_attribute(&opening.attrs, &attr_name) {
                 // With nestedIndexes off, only the innermost callback contributes — the
@@ -545,7 +1021,7 @@ impl ReactDataTestIdTransform {
                 } else {
                     self.map_indices.len().saturating_sub(1)
                 };
-                let attr = if self.map_indices.is_empty() {
+                let attr = if self.map_indices.is_empty() && prefix_expr.is_none() {
                     Self::make_attr(&attr_name, &test_id)
                 } else {
                     // Only an index the source declares is taken on trust; anything the
@@ -559,7 +1035,12 @@ impl ReactDataTestIdTransform {
                     for m in &mut self.map_indices[levels..] {
                         m.used = true;
                     }
-                    Self::make_dynamic_attr(&attr_name, &test_id, &segments)
+                    Self::make_dynamic_attr(
+                        &attr_name,
+                        prefix_expr.clone(),
+                        &static_part,
+                        &segments,
+                    )
                 };
                 opening.attrs.insert(0, attr);
             }
@@ -572,14 +1053,319 @@ impl ReactDataTestIdTransform {
         self.component_counters.insert(name.clone(), HashMap::new());
         self.current_component.replace(name)
     }
+
+    // Everything a component entry point does around its body: activate the component,
+    // work out where an instance prefix would come from, and — for a function that is
+    // handed to a map-like call by reference — put an index in scope so its JSX is
+    // unique per item.
+    //
+    // Every generated identifier is allocated here, while the whole node is still
+    // readable, and only *written back* at exit if an id referenced it. That is the same
+    // rule the inline-callback path follows: a function whose JSX needed nothing keeps
+    // the signature its author wrote.
+    fn enter_component_scope<N>(&mut self, name: String, params: &[&Pat], node: &N) -> ComponentScope
+    where
+        N: VisitWith<IdentScan>,
+    {
+        let is_callback =
+            self.resolve_callback_refs_enabled() && self.referenced_callbacks.contains(&name);
+        let prev_component = self.enter_component(name);
+        let prev_fn_expr_depth = std::mem::replace(&mut self.fn_expr_depth, 0);
+
+        // A function reached through `items.map(row)` receives the item as its first
+        // argument, not props — so it takes an index, and never an instance prefix.
+        let mut scope = ComponentScope {
+            prev_component,
+            prev_prefix: None,
+            prev_fn_expr_depth,
+            pushed_index: false,
+            prefix_insert: None,
+            prefix_param: None,
+            placeholder_param: None,
+            index_param: None,
+        };
+
+        let prefix = if is_callback {
+            None
+        } else {
+            self.plan_instance_prefix(params, node, &mut scope)
+        };
+        scope.prev_prefix = std::mem::replace(&mut self.instance_prefix, prefix);
+
+        if is_callback {
+            if let Some(source) = self.plan_callback_index(params, node, &mut scope) {
+                // Even a parameter this function declares is a guess: unlike a callback
+                // literal, a named function can also be called from somewhere that
+                // passes no index at all.
+                self.map_indices.push(MapIndex {
+                    source,
+                    used: false,
+                    force_guard: true,
+                });
+                scope.pushed_index = true;
+            }
+        }
+        scope
+    }
+
+    // A class component's prefix comes from this.props, so there are no parameters to
+    // plan for, and none of the callback-reference handling applies to render().
+    fn enter_class_component_scope(&mut self, name: String) -> ComponentScope {
+        let prev_component = self.enter_component(name);
+        let prev_fn_expr_depth = std::mem::replace(&mut self.fn_expr_depth, 0);
+        let prefix = self.instance_ids_enabled().then(|| InstancePrefix {
+            binding: PrefixBinding::ThisProps,
+            used: false,
+        });
+        ComponentScope {
+            prev_component,
+            prev_prefix: std::mem::replace(&mut self.instance_prefix, prefix),
+            prev_fn_expr_depth,
+            pushed_index: false,
+            prefix_insert: None,
+            prefix_param: None,
+            placeholder_param: None,
+            index_param: None,
+        }
+    }
+
+    fn params_mut_of(expr: &mut Expr) -> Option<ParamsMut<'_>> {
+        match expr {
+            Expr::Arrow(arrow) => Some(ParamsMut::Arrow(arrow)),
+            Expr::Fn(fn_expr) => Some(ParamsMut::Fn(&mut fn_expr.function)),
+            _ => None,
+        }
+    }
+
+    // Restores the enclosing component and writes back whatever the body actually used.
+    fn exit_component_scope(&mut self, scope: ComponentScope, params: &mut ParamsMut) {
+        let mut writeback = Writeback::default();
+
+        if scope.pushed_index {
+            let entry = self
+                .map_indices
+                .pop()
+                .expect("component map index stack popped by a nested visit");
+            if entry.used {
+                writeback.index_param = scope.index_param;
+                writeback.placeholder_param = scope.placeholder_param;
+            }
+        }
+
+        let prefix = std::mem::replace(&mut self.instance_prefix, scope.prev_prefix);
+        if let Some(prefix) = prefix {
+            if prefix.used {
+                writeback.prefix_param = scope.prefix_param;
+                if let Some((prop, ident)) = scope.prefix_insert {
+                    Self::insert_prefix_prop(params, &prop, ident);
+                }
+            }
+        }
+
+        if !writeback.is_empty() {
+            writeback.apply(params);
+        }
+        self.fn_expr_depth = scope.prev_fn_expr_depth;
+        self.current_component = scope.prev_component;
+    }
+
+    // Decides where this component reads the prefix its parent passed down, allocating
+    // (but not yet inserting) any binding that has to be introduced.
+    fn plan_instance_prefix<N>(
+        &mut self,
+        params: &[&Pat],
+        node: &N,
+        scope: &mut ComponentScope,
+    ) -> Option<InstancePrefix>
+    where
+        N: VisitWith<IdentScan>,
+    {
+        if !self.instance_ids_enabled() {
+            return None;
+        }
+        let prop = self.prefix_prop();
+        let ctxt = Self::params_ctxt_from(params);
+        let binding = match params.first() {
+            // No props parameter at all — one is appended if an id ends up using it.
+            None => {
+                let ident = self.fresh_ident_in(PREFIX_PARAM_BASE, node, ctxt);
+                scope.prefix_param = Some(Self::props_param(&prop, ident.clone()));
+                PrefixBinding::NewParam(ident)
+            }
+            Some(pat) => {
+                // `({ items } = {}) => …` — a default on the props parameter is
+                // transparent, the pattern underneath is what binds.
+                let pat = match pat {
+                    Pat::Assign(assign) => assign.left.as_ref(),
+                    other => other,
+                };
+                match pat {
+                    Pat::Ident(binding) => PrefixBinding::Props(binding.id.clone()),
+                    Pat::Object(object) => match Self::destructured_prop_ident(object, &prop) {
+                        // The component already destructures the prop itself; use that.
+                        Some(ident) => PrefixBinding::Destructured(ident),
+                        None => {
+                            let ident = self.fresh_ident_in(PREFIX_PARAM_BASE, node, ctxt);
+                            scope.prefix_insert = Some((prop, ident.clone()));
+                            PrefixBinding::Destructured(ident)
+                        }
+                    },
+                    // An array pattern in the props slot is not a React component.
+                    _ => return None,
+                }
+            }
+        };
+        Some(InstancePrefix {
+            binding,
+            used: false,
+        })
+    }
+
+    // The identifier an object pattern already binds for `prop`, if any — so a component
+    // that destructures `{"data-testid": testId}` itself is read, not rewritten.
+    fn destructured_prop_ident(object: &ObjectPat, prop: &str) -> Option<Ident> {
+        object.props.iter().find_map(|p| match p {
+            ObjectPatProp::KeyValue(kv) => {
+                let matches = match &kv.key {
+                    PropName::Str(s) => s.value.as_str() == Some(prop),
+                    PropName::Ident(i) => i.sym.as_ref() == prop,
+                    _ => false,
+                };
+                matches.then(|| Self::param_ident(&kv.value)).flatten()
+            }
+            ObjectPatProp::Assign(assign) => (assign.key.id.sym.as_ref() == prop).then(|| assign.key.id.clone()),
+            ObjectPatProp::Rest(_) => None,
+        })
+    }
+
+    // `{ "data-testid": __testidPrefix0 } = {}` — as a whole parameter. The default is
+    // not decoration: destructuring `undefined` throws, and a component that declared no
+    // parameter at all can legitimately be called with no argument (a helper, a test).
+    // It also leaves Function.length at 0, where a plain parameter would raise it.
+    fn props_param(prop: &str, ident: Ident) -> Pat {
+        Pat::Assign(AssignPat {
+            span: DUMMY_SP,
+            left: Box::new(Pat::Object(ObjectPat {
+                span: DUMMY_SP,
+                props: vec![Self::prefix_prop_pat(prop, ident)],
+                optional: false,
+                type_ann: None,
+            })),
+            right: Box::new(Expr::Object(ObjectLit {
+                span: DUMMY_SP,
+                props: Vec::new(),
+            })),
+        })
+    }
+
+    // …or as one property added to the pattern the component already had. It goes first
+    // because a rest element must stay last.
+    fn insert_prefix_prop(params: &mut ParamsMut, prop: &str, ident: Ident) {
+        let Some(pat) = params.first_pat_mut() else {
+            return;
+        };
+        let pat = match pat {
+            Pat::Assign(assign) => assign.left.as_mut(),
+            other => other,
+        };
+        if let Pat::Object(object) = pat {
+            object.props.insert(0, Self::prefix_prop_pat(prop, ident));
+        }
+    }
+
+    fn prefix_prop_pat(prop: &str, ident: Ident) -> ObjectPatProp {
+        ObjectPatProp::KeyValue(KeyValuePatProp {
+            key: PropName::Str(Str {
+                span: DUMMY_SP,
+                value: prop.into(),
+                raw: None,
+            }),
+            value: Box::new(Self::binding_pat(ident)),
+        })
+    }
+
+    // The index a function referenced as a map callback will use, in the same order of
+    // confidence as an inline callback. No call-site counter is available here — the
+    // call sites are elsewhere, possibly several — so every source is guarded.
+    fn plan_callback_index<N>(
+        &mut self,
+        params: &[&Pat],
+        node: &N,
+        scope: &mut ComponentScope,
+    ) -> Option<IndexSource>
+    where
+        N: VisitWith<IdentScan>,
+    {
+        if let Some(ident) = Self::declared_index_ident_from(params) {
+            return Some(IndexSource::Declared(ident));
+        }
+        if let Some(source) = Self::rest_index_source_from(params) {
+            return Some(source);
+        }
+        if let Some(ident) = Self::destructured_index_ident_from(params) {
+            return Some(IndexSource::Destructured(ident));
+        }
+        if !self.auto_index_enabled() || !Self::can_take_index_param_from(params) {
+            return None;
+        }
+        let ctxt = Self::params_ctxt_from(params);
+        let index = self.fresh_ident_in(INDEX_PARAM_BASE, node, ctxt);
+        if params.is_empty() {
+            let placeholder = self.fresh_ident_in(ITEM_PARAM_BASE, node, ctxt);
+            scope.placeholder_param = Some(Self::binding_pat(placeholder));
+        }
+        scope.index_param = Some(Self::binding_pat(index.clone()));
+        Some(IndexSource::Appended(index))
+    }
+}
+
+// State a component entry point saves while its body is visited, plus every identifier
+// the plugin may have to write back into its parameter list afterwards.
+struct ComponentScope {
+    prev_component: Option<String>,
+    prev_prefix: Option<InstancePrefix>,
+    prev_fn_expr_depth: u32,
+    pushed_index: bool,
+    // (prop name, binding) to add to an existing props pattern.
+    prefix_insert: Option<(String, Ident)>,
+    prefix_param: Option<Pat>,
+    placeholder_param: Option<Pat>,
+    index_param: Option<Pat>,
 }
 
 impl VisitMut for ReactDataTestIdTransform {
+    // One read-only pass first: a function handed to a map-like call by reference
+    // (`items.map(row)`) has to be indexed where it is *declared*, and that declaration
+    // may appear after the call site, or be hoisted above it.
+    fn visit_mut_program(&mut self, n: &mut Program) {
+        if self.resolve_callback_refs_enabled() {
+            let mut scan = CallbackRefScan {
+                map_methods: self.map_methods(),
+                collection_first: self.collection_first_enabled(),
+                names: HashSet::new(),
+            };
+            n.visit_with(&mut scan);
+            self.referenced_callbacks = scan.names;
+        }
+        n.visit_mut_children_with(self);
+    }
+
+    // A function expression rebinds `this`, so a class component's `this.props` is not
+    // readable inside one. Tracked as a depth, not a flag, because callbacks nest.
+    fn visit_mut_fn_expr(&mut self, n: &mut FnExpr) {
+        self.fn_expr_depth += 1;
+        n.visit_mut_children_with(self);
+        self.fn_expr_depth -= 1;
+    }
+
     // function MyComponent() { ... }
     fn visit_mut_fn_decl(&mut self, n: &mut FnDecl) {
-        let prev = self.enter_component(n.ident.sym.to_string());
+        let scope = {
+            let params = Self::params_of_fn(&n.function);
+            self.enter_component_scope(n.ident.sym.to_string(), &params, &*n)
+        };
         n.visit_mut_children_with(self);
-        self.current_component = prev;
+        self.exit_component_scope(scope, &mut ParamsMut::Fn(&mut n.function));
     }
 
     // const MyComponent = () => { ... }
@@ -588,9 +1374,17 @@ impl VisitMut for ReactDataTestIdTransform {
         if let Pat::Ident(ident) = &n.name {
             if let Some(init) = &n.init {
                 if matches!(init.as_ref(), Expr::Arrow(_) | Expr::Fn(_)) {
-                    let prev = self.enter_component(ident.sym.to_string());
+                    let name = ident.sym.to_string();
+                    let scope = {
+                        let params = Self::fn_params(init).unwrap_or_default();
+                        self.enter_component_scope(name, &params, &**init)
+                    };
                     n.visit_mut_children_with(self);
-                    self.current_component = prev;
+                    if let Some(mut params) =
+                        n.init.as_deref_mut().and_then(Self::params_mut_of)
+                    {
+                        self.exit_component_scope(scope, &mut params);
+                    }
                     return;
                 }
             }
@@ -611,9 +1405,12 @@ impl VisitMut for ReactDataTestIdTransform {
         if let PropName::Ident(ref key) = n.key {
             if key.sym.as_ref() == "render" {
                 if let Some(class_name) = self.current_class.clone() {
-                    let prev = self.enter_component(class_name);
+                    // A class reads its instance prefix from this.props, not from a
+                    // parameter, so there is nothing to write back to render()'s own
+                    // signature.
+                    let scope = self.enter_class_component_scope(class_name);
                     n.visit_mut_children_with(self);
-                    self.current_component = prev;
+                    self.exit_component_scope(scope, &mut ParamsMut::Fn(&mut n.function));
                     return;
                 }
             }
@@ -625,9 +1422,14 @@ impl VisitMut for ReactDataTestIdTransform {
     fn visit_mut_export_default_expr(&mut self, n: &mut ExportDefaultExpr) {
         if matches!(n.expr.as_ref(), Expr::Arrow(_) | Expr::Fn(_)) {
             if let Some(name) = self.filename_component_name.clone() {
-                let prev = self.enter_component(name);
+                let scope = {
+                    let params = Self::fn_params(&n.expr).unwrap_or_default();
+                    self.enter_component_scope(name, &params, &*n.expr)
+                };
                 n.visit_mut_children_with(self);
-                self.current_component = prev;
+                if let Some(mut params) = Self::params_mut_of(&mut n.expr) {
+                    self.exit_component_scope(scope, &mut params);
+                }
                 return;
             }
         }
@@ -644,9 +1446,14 @@ impl VisitMut for ReactDataTestIdTransform {
                 .map(|id| id.sym.to_string())
                 .or_else(|| self.filename_component_name.clone());
             if let Some(name) = name {
-                let prev = self.enter_component(name);
+                let scope = {
+                    let params = Self::params_of_fn(&fn_expr.function);
+                    self.enter_component_scope(name, &params, &fn_expr.function)
+                };
                 n.visit_mut_children_with(self);
-                self.current_component = prev;
+                if let DefaultDecl::Fn(fn_expr) = &mut n.decl {
+                    self.exit_component_scope(scope, &mut ParamsMut::Fn(&mut fn_expr.function));
+                }
                 return;
             }
         }
@@ -664,16 +1471,33 @@ impl VisitMut for ReactDataTestIdTransform {
         };
 
         // Prefer an index already in scope, in order of confidence: one the source names,
-        // then one a rest parameter collects, then one appended as a last resort.
+        // then one a rest parameter collects, then one a destructuring pattern in the
+        // index slot binds, then one appended as a last resort.
         let callback = &n.args[site.arg_index].expr;
-        let source = Self::declared_index_ident(callback)
+        let params = Self::fn_params(callback).unwrap_or_default();
+        // A counter is only worth wiring up where the callee might pass no index at all
+        // and the appended parameter would otherwise idle.
+        let counter = self
+            .counter_call_site(n, &site)
+            .then(|| self.fresh_ident_in(SEQ_PARAM_BASE, &*n, SyntaxContext::default()));
+        let source = Self::declared_index_ident_from(&params)
             .map(IndexSource::Declared)
-            .or_else(|| Self::rest_index_source(callback))
+            .or_else(|| Self::rest_index_source_from(&params))
+            .or_else(|| Self::destructured_index_ident_from(&params).map(IndexSource::Destructured))
             .or_else(|| {
-                (self.auto_index_enabled() && Self::can_take_index_param(callback))
-                    .then(|| IndexSource::Appended(self.fresh_ident(INDEX_PARAM_BASE, callback)))
+                (self.auto_index_enabled() && Self::can_take_index_param_from(&params)).then(|| {
+                    let index = self.fresh_ident(INDEX_PARAM_BASE, callback);
+                    match counter {
+                        Some(_) => IndexSource::Counted(index),
+                        None => IndexSource::Appended(index),
+                    }
+                })
             });
-        let mut index = source.map(|source| MapIndex { source, used: false });
+        let mut index = source.map(|source| MapIndex {
+            source,
+            used: false,
+            force_guard: false,
+        });
 
         // The index binding exists ONLY inside the callback. Visiting the callee or the
         // remaining arguments with it in scope emits a reference to a variable that does
@@ -681,6 +1505,9 @@ impl VisitMut for ReactDataTestIdTransform {
         // a testid of {"C.Header-" + i}, throwing ReferenceError at render. Children are
         // visited in their natural order (callee, args, type_args) so element numbering
         // is unchanged.
+        // Set only if the counter is actually referenced, so a call site whose callback
+        // never used one is left exactly as it was written.
+        let mut wrap_in_counter = None;
         n.callee.visit_mut_with(self);
         for (idx, arg) in n.args.iter_mut().enumerate() {
             if idx != site.arg_index {
@@ -692,9 +1519,10 @@ impl VisitMut for ReactDataTestIdTransform {
                 continue;
             };
             let appended = match &entry.source {
-                IndexSource::Appended(ident) => Some(ident.clone()),
+                IndexSource::Appended(ident) | IndexSource::Counted(ident) => Some(ident.clone()),
                 _ => None,
             };
+            let counted = matches!(entry.source, IndexSource::Counted(_));
             self.map_indices.push(entry);
             arg.visit_mut_with(self);
             let entry = self
@@ -704,10 +1532,24 @@ impl VisitMut for ReactDataTestIdTransform {
             // A callback whose JSX (if any) never used the index keeps its original
             // signature — no stray parameter in the output.
             if let (Some(ident), true) = (appended, entry.used) {
-                self.append_index_param(&mut arg.expr, ident);
+                match (counted, counter.clone()) {
+                    (true, Some(seq)) => {
+                        self.append_counted_index_param(&mut arg.expr, ident, seq.clone());
+                        wrap_in_counter = Some(seq);
+                    }
+                    _ => self.append_index_param(&mut arg.expr, ident),
+                }
             }
         }
         n.type_args.visit_mut_with(self);
+
+        // The counter has to outlive each callback invocation but be reset every time
+        // the map call itself runs, so it is bound by an arrow wrapped around the call:
+        //   ((__testidSeq0) => R.map((item, __testidIdx0 = __testidSeq0++) => …, xs))(0)
+        if let Some(seq) = wrap_in_counter {
+            let inner = std::mem::replace(n, Self::empty_call());
+            *n = Self::wrap_in_counter(inner, seq);
+        }
     }
 
     fn visit_mut_jsx_element(&mut self, n: &mut JSXElement) {
@@ -910,6 +1752,52 @@ mod tests {
         assert!(!t.collection_first_enabled());
         assert!(!t.nested_indexes_enabled());
         assert_eq!(t.map_methods(), ["map".to_string()]);
+    }
+
+    // Same contract for the options added in 0.3.0: a field name that does not match is
+    // not a compile error, it is an option that silently does nothing.
+    #[test]
+    fn parse_options_deserializes_the_new_options() {
+        let opts = parse_options(Some(
+            r#"{"resolveCallbackRefs":false,"indexCounter":false,"instanceIds":true}"#.to_string(),
+        ));
+        assert_eq!(opts.resolve_callback_refs, Some(false));
+        assert_eq!(opts.index_counter, Some(false));
+        assert_eq!(opts.instance_ids, Some(true));
+
+        let t = ReactDataTestIdTransform::new(opts);
+        assert!(!t.resolve_callback_refs_enabled());
+        assert!(!t.index_counter_enabled());
+        assert!(t.instance_ids_enabled());
+    }
+
+    // instanceIds is the one option that has to be switched ON, because it rewrites ids
+    // that already work: `Badge.span` becomes `List.Badge.span`. Every other option is
+    // an opt-out from inference that is already correct by default.
+    #[test]
+    fn instance_ids_is_the_only_option_that_defaults_to_off() {
+        let d = ReactDataTestIdTransform::new(PluginOptions::default());
+        assert!(d.resolve_callback_refs_enabled());
+        assert!(d.index_counter_enabled());
+        assert!(!d.instance_ids_enabled());
+    }
+
+    // The prefix prop is the attribute the plugin already injects on the child, so a
+    // project that renamed the attribute gets the prefix under the new name too.
+    #[test]
+    fn prefix_prop_follows_the_configured_attribute() {
+        assert_eq!(
+            ReactDataTestIdTransform::new(PluginOptions::default()).prefix_prop(),
+            "data-testid"
+        );
+        assert_eq!(
+            ReactDataTestIdTransform::new(PluginOptions {
+                attributes: Some(vec!["data-test-id".into(), "data-cy".into()]),
+                ..Default::default()
+            })
+            .prefix_prop(),
+            "data-test-id"
+        );
     }
 
     #[test]
@@ -1192,6 +2080,10 @@ mod tests {
         }))
     }
 
+    fn params_of(callback: &Expr) -> Vec<&Pat> {
+        ReactDataTestIdTransform::fn_params(callback).unwrap_or_default()
+    }
+
     fn param(sym: &str) -> Pat {
         Pat::Ident(BindingIdent {
             id: IdentName { span: DUMMY_SP, sym: sym.into() }.into(),
@@ -1356,7 +2248,7 @@ mod tests {
     fn declared_index_ident_returns_second_param() {
         let cb = arrow(vec![param("item"), param("idx")]);
         assert_eq!(
-            ReactDataTestIdTransform::declared_index_ident(&cb).map(|i| i.sym.to_string()),
+            ReactDataTestIdTransform::declared_index_ident_from(&params_of(&cb)).map(|i| i.sym.to_string()),
             Some("idx".to_string())
         );
     }
@@ -1364,7 +2256,7 @@ mod tests {
     #[test]
     fn declared_index_ident_returns_none_when_only_one_param() {
         let cb = arrow(vec![param("item")]);
-        assert!(ReactDataTestIdTransform::declared_index_ident(&cb).is_none());
+        assert!(ReactDataTestIdTransform::declared_index_ident_from(&params_of(&cb)).is_none());
     }
 
     #[test]
@@ -1378,7 +2270,7 @@ mod tests {
                 type_ann: None,
             }),
         ]);
-        assert!(ReactDataTestIdTransform::declared_index_ident(&cb).is_none());
+        assert!(ReactDataTestIdTransform::declared_index_ident_from(&params_of(&cb)).is_none());
     }
 
     #[test]
@@ -1398,15 +2290,15 @@ mod tests {
             }),
         ]);
         assert_eq!(
-            ReactDataTestIdTransform::declared_index_ident(&cb).map(|i| i.sym.to_string()),
+            ReactDataTestIdTransform::declared_index_ident_from(&params_of(&cb)).map(|i| i.sym.to_string()),
             Some("index".to_string())
         );
     }
 
     #[test]
     fn can_take_index_param_accepts_zero_or_one_param() {
-        assert!(ReactDataTestIdTransform::can_take_index_param(&arrow(vec![])));
-        assert!(ReactDataTestIdTransform::can_take_index_param(&arrow(vec![param("item")])));
+        assert!(ReactDataTestIdTransform::can_take_index_param_from(&params_of(&arrow(vec![]))));
+        assert!(ReactDataTestIdTransform::can_take_index_param_from(&params_of(&arrow(vec![param("item")]))));
     }
 
     #[test]
@@ -1418,13 +2310,274 @@ mod tests {
             arg: Box::new(param("args")),
             type_ann: None,
         })]);
-        assert!(!ReactDataTestIdTransform::can_take_index_param(&cb));
+        assert!(!ReactDataTestIdTransform::can_take_index_param_from(&params_of(&cb)));
     }
 
     #[test]
     fn can_take_index_param_rejects_callback_that_already_has_two() {
         let cb = arrow(vec![param("item"), param("idx")]);
-        assert!(!ReactDataTestIdTransform::can_take_index_param(&cb));
+        assert!(!ReactDataTestIdTransform::can_take_index_param_from(&params_of(&cb)));
+    }
+
+    // --- destructured_index_ident_from ---
+
+    fn array_pat(elems: Vec<Pat>) -> Pat {
+        Pat::Array(ArrayPat {
+            span: DUMMY_SP,
+            elems: elems.into_iter().map(Some).collect(),
+            optional: false,
+            type_ann: None,
+        })
+    }
+
+    #[test]
+    fn destructured_index_reads_the_first_binding_of_an_array_pattern() {
+        // `(item, [i]) => …` — the slot is occupied so nothing can be appended, but the
+        // pattern does bind something the source pulled out of that argument.
+        let cb = arrow(vec![param("item"), array_pat(vec![param("i")])]);
+        assert_eq!(
+            ReactDataTestIdTransform::destructured_index_ident_from(&params_of(&cb))
+                .map(|i| i.sym.to_string()),
+            Some("i".to_string())
+        );
+    }
+
+    #[test]
+    fn destructured_index_reads_a_shorthand_object_pattern() {
+        // `(item, { index }) => …`
+        let cb = arrow(vec![
+            param("item"),
+            Pat::Object(ObjectPat {
+                span: DUMMY_SP,
+                props: vec![ObjectPatProp::Assign(AssignPatProp {
+                    span: DUMMY_SP,
+                    key: BindingIdent {
+                        id: IdentName { span: DUMMY_SP, sym: "index".into() }.into(),
+                        type_ann: None,
+                    },
+                    value: None,
+                })],
+                optional: false,
+                type_ann: None,
+            }),
+        ]);
+        assert_eq!(
+            ReactDataTestIdTransform::destructured_index_ident_from(&params_of(&cb))
+                .map(|i| i.sym.to_string()),
+            Some("index".to_string())
+        );
+    }
+
+    #[test]
+    fn destructured_index_ignores_a_plain_identifier_slot() {
+        // That is the Declared case, which is trusted and unguarded; routing it here
+        // would guard an index the source asserted was real.
+        let cb = arrow(vec![param("item"), param("i")]);
+        assert!(
+            ReactDataTestIdTransform::destructured_index_ident_from(&params_of(&cb)).is_none()
+        );
+    }
+
+    #[test]
+    fn destructured_index_returns_none_when_the_pattern_binds_nothing() {
+        let cb = arrow(vec![param("item"), array_pat(vec![])]);
+        assert!(
+            ReactDataTestIdTransform::destructured_index_ident_from(&params_of(&cb)).is_none()
+        );
+    }
+
+    // Order matters at the call site: a rest element at position 1 is read as `rest[0]`,
+    // and must never be referenced as if it were the index itself — `"-" + rest` would
+    // stringify the whole array.
+    #[test]
+    fn a_rest_element_is_not_treated_as_a_destructured_index() {
+        let cb = arrow(vec![
+            param("item"),
+            Pat::Rest(RestPat {
+                span: DUMMY_SP,
+                dot3_token: DUMMY_SP,
+                arg: Box::new(param("rest")),
+                type_ann: None,
+            }),
+        ]);
+        let params = params_of(&cb);
+        assert!(
+            matches!(
+                ReactDataTestIdTransform::rest_index_source_from(&params),
+                Some(IndexSource::RestElement { .. })
+            ),
+            "the rest source must match first, or the destructured path would take it"
+        );
+    }
+
+    // --- counter_call_site ---
+
+    fn counter_for(options: PluginOptions, call: &CallExpr) -> bool {
+        let t = ReactDataTestIdTransform::new(options);
+        match t.map_call_site(call) {
+            Some(site) => t.counter_call_site(call, &site),
+            None => false,
+        }
+    }
+
+    #[test]
+    fn counter_only_where_a_collection_argument_follows_the_callback() {
+        // R.map(fn, items) — the call iterates now, so the counter lives exactly as long
+        // as the iteration does.
+        let ramda = call(
+            Some("R"),
+            "map",
+            vec![arrow(vec![param("item")]), ident_expr("items")],
+        );
+        assert!(counter_for(PluginOptions::default(), &ramda));
+
+        // map(fn) — curried. This call evaluates once and the function it returns may be
+        // stored and reused; a counter there would climb past the item positions.
+        let curried = call(None, "map", vec![arrow(vec![param("item")])]);
+        assert!(!counter_for(PluginOptions::default(), &curried));
+
+        // _.map(items, fn) — every callee that takes this shape passes an index or a key.
+        let lodash = call(
+            Some("_"),
+            "map",
+            vec![ident_expr("items"), arrow(vec![param("item")])],
+        );
+        assert!(!counter_for(PluginOptions::default(), &lodash));
+    }
+
+    #[test]
+    fn counter_is_suppressed_by_either_opt_out() {
+        let ramda = || {
+            call(
+                Some("R"),
+                "map",
+                vec![arrow(vec![param("item")]), ident_expr("items")],
+            )
+        };
+        assert!(!counter_for(
+            PluginOptions { index_counter: Some(false), ..Default::default() },
+            &ramda()
+        ));
+        // autoIndex governs appending, and the counter rides on an appended parameter.
+        assert!(!counter_for(
+            PluginOptions { auto_index: Some(false), ..Default::default() },
+            &ramda()
+        ));
+    }
+
+    // The counter binding is introduced by an arrow wrapped around the call, and an
+    // arrow can neither await nor yield.
+    #[test]
+    fn counter_is_refused_when_the_call_awaits() {
+        let awaited = call(
+            Some("R"),
+            "map",
+            vec![
+                arrow(vec![param("item")]),
+                Box::new(Expr::Await(AwaitExpr {
+                    span: DUMMY_SP,
+                    arg: ident_expr("load"),
+                })),
+            ],
+        );
+        assert!(!counter_for(PluginOptions::default(), &awaited));
+    }
+
+    // …but an await inside the callback is that callback's own business: an async arrow
+    // keeps working when the *call* around it is wrapped.
+    #[test]
+    fn counter_is_allowed_when_only_the_callback_awaits() {
+        let mut cb = arrow(vec![param("item")]);
+        if let Expr::Arrow(arrow) = cb.as_mut() {
+            arrow.is_async = true;
+            arrow.body = Box::new(BlockStmtOrExpr::Expr(Box::new(Expr::Await(AwaitExpr {
+                span: DUMMY_SP,
+                arg: ident_expr("item"),
+            }))));
+        }
+        let c = call(Some("R"), "map", vec![cb, ident_expr("items")]);
+        assert!(counter_for(PluginOptions::default(), &c));
+    }
+
+    // --- guarding ---
+
+    #[test]
+    fn a_counted_index_is_not_guarded_but_everything_else_inferred_is() {
+        let ident: Ident = IdentName { span: DUMMY_SP, sym: "i".into() }.into();
+        let index = |source| MapIndex { source, used: false, force_guard: false };
+        assert!(!index(IndexSource::Declared(ident.clone())).needs_guard());
+        assert!(!index(IndexSource::Counted(ident.clone())).needs_guard());
+        assert!(index(IndexSource::Appended(ident.clone())).needs_guard());
+        assert!(index(IndexSource::Destructured(ident.clone())).needs_guard());
+        assert!(index(IndexSource::RestElement {
+            rest: ident.clone(),
+            position: 1.0
+        })
+        .needs_guard());
+        // A function only *referenced* as a callback can also be called with no index at
+        // all, so even a parameter it declares is a guess.
+        assert!(MapIndex {
+            source: IndexSource::Declared(ident),
+            used: false,
+            force_guard: true
+        }
+        .needs_guard());
+    }
+
+    // --- callback references ---
+
+    #[test]
+    fn callback_ref_scan_collects_both_argument_positions() {
+        let mut scan = CallbackRefScan {
+            map_methods: &["map".to_string()],
+            collection_first: true,
+            names: HashSet::new(),
+        };
+        // items.map(renderItem)
+        call(Some("items"), "map", vec![ident_expr("renderItem")]).visit_with(&mut scan);
+        // _.map(items, renderTag)
+        call(
+            Some("_"),
+            "map",
+            vec![ident_expr("items"), ident_expr("renderTag")],
+        )
+        .visit_with(&mut scan);
+        // items.filter(keep) — not an iteration name
+        call(Some("items"), "filter", vec![ident_expr("keep")]).visit_with(&mut scan);
+
+        assert!(scan.names.contains("renderItem"));
+        assert!(scan.names.contains("renderTag"));
+        assert!(!scan.names.contains("keep"));
+    }
+
+    // --- instance prefix ---
+
+    #[test]
+    fn destructured_prop_ident_finds_a_string_keyed_binding() {
+        // `({ "data-testid": testId }) => …` — the component already destructures the
+        // prop, so it is read rather than rewritten.
+        let object = ObjectPat {
+            span: DUMMY_SP,
+            props: vec![ObjectPatProp::KeyValue(KeyValuePatProp {
+                key: PropName::Str(Str {
+                    span: DUMMY_SP,
+                    value: "data-testid".into(),
+                    raw: None,
+                }),
+                value: Box::new(param("testId")),
+            })],
+            optional: false,
+            type_ann: None,
+        };
+        assert_eq!(
+            ReactDataTestIdTransform::destructured_prop_ident(&object, "data-testid")
+                .map(|i| i.sym.to_string()),
+            Some("testId".to_string())
+        );
+        assert!(
+            ReactDataTestIdTransform::destructured_prop_ident(&object, "data-cy").is_none(),
+            "a different attribute name must not match"
+        );
     }
 
     // --- fresh_ident ---
@@ -1525,6 +2678,7 @@ mod tests {
 
         let attr = ReactDataTestIdTransform::make_dynamic_attr(
             "data-testid",
+            None,
             "List.li",
             &[(Expr::Ident(index_ident.clone()), false)],
         );
@@ -1568,6 +2722,7 @@ mod tests {
 
         let attr = ReactDataTestIdTransform::make_dynamic_attr(
             "data-testid",
+            None,
             "List.li",
             &[(Expr::Ident(index_ident.clone()), true)],
         );
@@ -1638,6 +2793,7 @@ mod tests {
                 IdentName { span: DUMMY_SP, sym: "index".into() }.into(),
             ),
             used: false,
+            force_guard: false,
         });
         let mut opening = JSXOpeningElement {
             span: DUMMY_SP,

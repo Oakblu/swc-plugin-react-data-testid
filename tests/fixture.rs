@@ -150,6 +150,8 @@ fn fixture_legacy_ids(input: PathBuf) {
                 collection_first_map: Some(false),
                 nested_indexes: Some(false),
                 map_methods: Some(vec!["map".to_string()]),
+                resolve_callback_refs: Some(false),
+                index_counter: Some(false),
                 ..Default::default()
             }))
         },
@@ -173,6 +175,29 @@ fn fixture_flat_indexes(input: PathBuf) {
         &|_| {
             visit_mut_pass(ReactDataTestIdTransform::new(PluginOptions {
                 nested_indexes: Some(false),
+                ..Default::default()
+            }))
+        },
+        &input,
+        &output,
+        Default::default(),
+    );
+}
+
+// instanceIds: true — the one option that is off by default, because it rewrites every
+// nested id from `Badge.span` to `List.Badge.span`. A component prefixes its ids with
+// the data-testid its parent passed down, so two instances no longer collide.
+#[testing::fixture("tests/fixture-instance-ids/*/input.tsx")]
+fn fixture_instance_ids(input: PathBuf) {
+    let output = input.with_file_name("output.tsx");
+    test_fixture(
+        Syntax::Typescript(TsSyntax {
+            tsx: true,
+            ..Default::default()
+        }),
+        &|_| {
+            visit_mut_pass(ReactDataTestIdTransform::new(PluginOptions {
+                instance_ids: Some(true),
                 ..Default::default()
             }))
         },
@@ -467,9 +492,9 @@ mod correctness {
             r#"data-testid={"Defaulted.li-" + index}"#,   // default value unwrapped
             r#"data-testid={"Annotated.li-" + index}"#,   // type annotation ignored
             r#"data-testid={"WithArray.li-" + index}"#,   // 3rd parameter is untouched
-            // a destructuring pattern binds nothing to reference: static id, and the
-            // occupied slot means no parameter is appended either
-            r#"items.map((item, [i])=><li data-testid="Destructured.li">"#,
+            // a destructuring pattern in the index slot: the first identifier it binds
+            // is referenced, guarded, and the occupied slot means nothing is appended
+            r#"items.map((item, [i])=><li data-testid={"Destructured.li" + (i === void 0 ? "" : "-" + i)}>"#,
             // a default on the first parameter leaves the index slot free; a parameter
             // without a default may legally follow one that has it
             r#"items.map((item = "?", __testidIdx0)"#,
@@ -519,10 +544,9 @@ mod correctness {
         // shapes where nothing dynamic can be emitted at all: no parameter list to read,
         // no attribute to write, or no identifier bound to reference
         check("tests/fixture/map-no-inject-cases", false, &[
-            r#"items.map(renderItem)"#,                       // no parameter list
+            r#"items.map(renderItem)"#,                       // imported: no declaration to index
             r#".map((item)=>item.trim())"#,                   // no JSX → signature untouched
             r#"items.map((item)=><li data-testid="custom">"#, // attr already present
-            r#"items.map((item, [i])=><li data-testid="Destructured.li">"#, // nothing bound
         ]);
         let output =
             std::fs::read_to_string("tests/fixture/map-no-inject-cases/output.tsx").unwrap();
@@ -538,24 +562,179 @@ mod correctness {
         // and every segment is guarded. Narrowing detection instead would guarantee
         // duplicate ids for the ones that DO pass an index (RxJS, .map(cb, thisArg)).
         check("tests/fixture/map-uncertain-callees", true, &[
-            // ramda order — a parameter is appended, and drops out at runtime
-            r#"R.map((item, __testidIdx0)"#,
-            r#"data-testid={"Ramda.li" + (__testidIdx0 === void 0 ? "" : "-" + __testidIdx0)}"#,
-            // bare map(fn) — RxJS passes an index here, curried ramda does not
-            r#"map((item, __testidIdx1)"#,
-            // .map(cb, thisArg) is Array.prototype.map: the index is real
-            r#"function(item, __testidIdx2)"#,
+            // ramda order — the callee may pass no index, so the appended parameter
+            // defaults to a call-site counter and the segment needs no guard
+            r#"((__testidSeq0)=>R.map((item, __testidIdx1 = __testidSeq0++)"#,
+            r#"data-testid={"Ramda.li-" + __testidIdx1}"#,
+            // bare map(fn) — RxJS passes an index here, curried ramda does not. No
+            // collection argument, so no counter: the function this call returns may be
+            // stored and reused, and a counter would drift instead of tracking items.
+            r#"map((item, __testidIdx2)=><li data-testid={"Curried.li" + (__testidIdx2 === void 0 ? "" : "-" + __testidIdx2)}>"#,
+            // .map(cb, thisArg) is Array.prototype.map, so the real index wins and the
+            // counter's default never runs — but the shape cannot say so statically
+            r#"function(item, __testidIdx4 = __testidSeq3++)"#,
             // a rest parameter already holds the index — no signature change needed
             r#"data-testid={"Rest.li" + (args[1] === void 0 ? "" : "-" + args[1])}"#,
             r#"items.map((...args)=>"#,
             r#"data-testid={"NamedThenRest.li" + (rest[0] === void 0 ? "" : "-" + rest[0])}"#,
             r#"items.map((item, ...rest)=>"#,
+            // a destructuring pattern in the index slot binds something to reference
+            r#"items.map((item, [i])=><li data-testid={"Destructured.li" + (i === void 0 ? "" : "-" + i)}>"#,
+            r#"items.map((item, { index })=><li data-testid={"NamedInPattern.li" + (index === void 0 ? "" : "-" + index)}>"#,
         ]);
         let output =
             std::fs::read_to_string("tests/fixture/map-uncertain-callees/output.tsx").unwrap();
         assert!(
             !output.contains("undefined"),
-            "every inferred segment must be guarded with `void 0`"
+            "an inferred segment is either guarded with `void 0` or bound by a counter"
+        );
+    }
+
+    #[test]
+    fn map_callback_refs() {
+        // A callback passed by reference has no parameter list at the call site, so the
+        // index is added where the function is declared — before or after the call, and
+        // hoisted or not, which is why the names are collected in a pass of their own.
+        check("tests/fixture/map-callback-refs", true, &[
+            // declared after the call site that reaches it
+            r#"const renderItem = (item: string, __testidIdx0)"#,
+            r#"data-testid={"renderItem.li" + (__testidIdx0 === void 0 ? "" : "-" + __testidIdx0)}"#,
+            // an index the function already declares is used as-is — but still guarded,
+            // because a named function can also be called with no index at all
+            r#"data-testid={"renderRow.tr" + (position === void 0 ? "" : "-" + position)}"#,
+            // the collection-first shape passes the reference as argument 1
+            r#"function renderTag(tag: string, __testidIdx1)"#,
+            // no parameters at all: a placeholder keeps the index in the second slot
+            r#"const renderStar = (__testidItem3, __testidIdx2)"#,
+            // the referenced function's own map nests underneath it
+            r#"data-testid={"renderGroup.b" + (groupIndex === void 0 ? "" : "-" + groupIndex) + (__testidIdx4 === void 0 ? "" : "-" + __testidIdx4)}"#,
+            // a component used as a callback is a callback
+            r#"data-testid={"Cell.td" + (__testidIdx5 === void 0 ? "" : "-" + __testidIdx5)}"#,
+        ]);
+        let output = std::fs::read_to_string("tests/fixture/map-callback-refs/output.tsx").unwrap();
+        assert!(
+            output.contains(r#"const plainHelper = (value: string)=><em data-testid="plainHelper.em">"#),
+            "a function never used as a callback must keep its signature and its static id"
+        );
+        assert!(
+            !output.contains("undefined"),
+            "every segment here is a guess about a call site elsewhere, so all are guarded"
+        );
+    }
+
+    #[test]
+    fn map_index_counter() {
+        // Where the callee may pass no index, the appended parameter defaults to a
+        // counter bound just outside the call. The default runs per invocation and only
+        // when nothing was passed, so the binding always holds a number — which is what
+        // licenses the unguarded segment.
+        check("tests/fixture/map-index-counter", true, &[
+            r#"((__testidSeq0)=>R.map((item, __testidIdx1 = __testidSeq0++)"#,
+            r#"data-testid={"Ramda.li-" + __testidIdx1}"#,
+            // an index the source declares is left exactly as written
+            r#"R.map((item, i)=><li data-testid={"Declared.li-" + i}>"#,
+            // nested calls get one counter each, and one segment per level
+            r#"data-testid={"Table.td-" + __testidIdx7 + "-" + __testidIdx9}"#,
+        ]);
+        let output = std::fs::read_to_string("tests/fixture/map-index-counter/output.tsx").unwrap();
+        // A curried map(fn) must NOT get a counter: that call evaluates once and the
+        // function it returns may be stored, so the counter would climb past the item
+        // positions instead of tracking them.
+        assert!(
+            output.contains(r#"R.map((item, __testidIdx2)=><li data-testid={"Curried.li" + (__testidIdx2 === void 0 ? "" : "-" + __testidIdx2)}>"#),
+            "a call with no collection argument keeps the guarded index and gets no counter"
+        );
+        // An arrow cannot await, so a call with an awaited argument cannot be wrapped.
+        assert!(
+            output.contains(r#"data-testid={"Awaited.li" + (__testidIdx10 === void 0 ? "" : "-" + __testidIdx10)}"#),
+            "a call containing await must fall back to the guarded index, not be wrapped"
+        );
+        assert!(
+            !output.contains("__testidSeq") || !output.contains("await load()))("),
+            "the counter arrow must never be wrapped around an awaited call"
+        );
+        // A callback with no JSX referenced nothing, so neither parameter is written back.
+        assert!(
+            output.contains(r#"R.map((item)=>item.trim(), items).length"#),
+            "a callback whose body has no testid keeps its original signature"
+        );
+    }
+
+    #[test]
+    fn instance_ids() {
+        // instanceIds: true — a component prefixes its ids with the one it was handed,
+        // so two instances of the same component stop colliding. The fallback is the
+        // component's own name, i.e. exactly the id it had before.
+        // (the input deliberately contains data-testid already: one component
+        // destructures the prop itself, another pins an id on an element)
+        check("tests/fixture-instance-ids/components", false, &[
+            // the prop is added to the pattern the component already had, first, so a
+            // rest element stays last
+            r#"const Badge = ({ "data-testid": __testidPrefix0, label }"#,
+            r#"data-testid={(__testidPrefix0 || "Badge") + ".span"}"#,
+            // two instances get different prefixes from their parent
+            r#"<Badge data-testid={(__testidPrefix1 || "Toolbar") + ".Badge"} label="a"/>"#,
+            r#"<Badge data-testid={(__testidPrefix1 || "Toolbar") + ".Badge2"} label="b"/>"#,
+            // an identifier props parameter is read through a `&&`, since a component
+            // function called as a plain helper may get no props at all
+            r#"data-testid={(props && props["data-testid"] || "Card") + ".article"}"#,
+            // a component that declared no parameter gets one, defaulted so that calling
+            // it with no argument still cannot throw
+            r#"const Field = ({ "data-testid": __testidPrefix8 } = {})"#,
+            // a component that already destructures the prop is read, not rewritten
+            r#"const Titled = ({ "data-testid": testId }"#,
+            r#"data-testid={(testId || "Titled") + ".h2"}"#,
+            // prefix and map index compose
+            r#"data-testid={(__testidPrefix3 || "Rows") + ".Badge" + (__testidIdx4 === void 0 ? "" : "-" + __testidIdx4)}"#,
+            // a class reads this.props
+            r#"data-testid={(this.props && this.props["data-testid"] || "Panel") + ".section"}"#,
+            // …but not from inside a function expression, where `this` is something else
+            r#"data-testid={"Legacy.li" + (__testidIdx5 === void 0 ? "" : "-" + __testidIdx5)}"#,
+            // the prefix is inserted before a rest element, never after it
+            r#"const Input = ({ "data-testid": __testidPrefix7, label, ...rest }"#,
+            // a default on the props parameter is transparent — the property goes into
+            // the pattern underneath it, not around it
+            r#"const Defaulted = ({ "data-testid": __testidPrefix9, label } = {})"#,
+            // a function reached by reference takes an INDEX, never a prefix: its first
+            // argument is the item, so a prefix read there would read a property of it
+            r#"const renderItem = (item: string, __testidIdx11)"#,
+            r#"data-testid={"renderItem.li" + (__testidIdx11 === void 0 ? "" : "-" + __testidIdx11)}"#,
+        ]);
+        let output =
+            std::fs::read_to_string("tests/fixture-instance-ids/components/output.tsx").unwrap();
+        assert!(
+            output.contains(r#"const Pinned = ()=><div data-testid="pinned"/>;"#),
+            "a component whose only element already has the attribute gains no parameter"
+        );
+        // An array pattern in the props slot is not a React component: no prefix exists
+        // to read, so those ids stay exactly as they are without the option.
+        assert!(
+            output.contains(r#"const NotAComponent = ([first])=><p data-testid="NotAComponent.p">"#),
+            "a non-props first parameter must be left alone and keep static ids"
+        );
+        // The fallback is the component name, so an unrendered-by-us component keeps the
+        // ids it had before the option was turned on.
+        assert!(
+            !output.contains(r#"|| "") "#),
+            "the fallback must be the component name, never an empty prefix"
+        );
+    }
+
+    // Nothing above is opt-in except instanceIds: with every opt-out set, the ids are
+    // exactly 0.1.x's, including for the two shapes newly reached by the counter and by
+    // callback-reference resolution.
+    #[test]
+    fn legacy_ids_cover_the_new_inference() {
+        check("tests/fixture-legacy-ids/all-off", true, &[
+            // indexCounter: false — no counter arrow around a ramda-shaped call
+            r#"R.map((item)=><li data-testid="Ramda.li">"#,
+            // resolveCallbackRefs: false — the referenced function is not looked up
+            r#"const renderItem = (item: string)=><li data-testid="renderItem.li">"#,
+        ]);
+        let output = std::fs::read_to_string("tests/fixture-legacy-ids/all-off/output.tsx").unwrap();
+        assert!(
+            !output.contains("__testidSeq"),
+            "no counter may be introduced with indexCounter disabled"
         );
     }
 

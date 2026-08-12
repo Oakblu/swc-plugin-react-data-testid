@@ -33,3 +33,15 @@ const Rest = ({ items }: { items: string[] }) => (
 const NamedThenRest = ({ items }: { items: string[] }) => (
   <ul>{items.map((item, ...rest) => <li>{item}</li>)}</ul>
 );
+
+// 6. A destructuring pattern in the index slot. The slot is occupied so nothing can be
+//    appended, but the pattern does bind something the source pulled out of that
+//    argument — the first such binding is used, guarded like any other guess.
+const Destructured = ({ items }: { items: string[] }) => (
+  <ul>{items.map((item, [i]) => <li>{item}</li>)}</ul>
+);
+
+// 7. …including an object pattern, where the binding is usually named outright.
+const NamedInPattern = ({ items }: { items: string[] }) => (
+  <ul>{items.map((item, { index }) => <li>{item}</li>)}</ul>
+);

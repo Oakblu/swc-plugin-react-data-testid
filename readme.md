@@ -317,6 +317,9 @@ of the whole options object lives in
 | `mapMethods`         | `string[]` | `["map", "flatMap"]` | Callee names treated as iteration. Narrow it to leave a name alone, or widen it to add your own iterator |
 | `collectionFirstMap` | `boolean`  | `true`               | Recognise `f(collection, callback)` — `_.map`, `Children.map`, `$.map` |
 | `nestedIndexes`      | `boolean`  | `true`               | Give an element inside nested callbacks one id segment per level. Turning this off makes nested ids collide across outer iterations |
+| `resolveCallbackRefs`| `boolean`  | `true`               | Index a function passed to a map-like call by reference (`items.map(row)`) at its declaration in the same file |
+| `indexCounter`       | `boolean`  | `true`               | Supply an index from a call-site counter where the callee passes none — `R.map(fn, items)` |
+| `instanceIds`        | `boolean`  | **`false`**          | Prefix a component's ids with the one its parent passed down, so two instances differ. Changes every nested id — see [Limitations](#ids-are-per-component-not-per-instance) |
 | `manifestDir`        | `string`   | —                    | ❌ **Not supported** — fails the build, see [Limitations](#manifestdir-is-not-supported) |
 
 If the plugin config cannot be read — most often a value of the wrong type, like
@@ -324,14 +327,20 @@ If the plugin config cannot be read — most often a value of the wrong type, li
 Deserialization is all-or-nothing, so one mistyped field would otherwise discard every
 other option you set and leave the plugin looking as though it had accepted them.
 
-Setting all four to their non-default values reproduces the 0.1.x id scheme exactly:
+`instanceIds` is the one option you have to switch **on**: it rewrites ids that already
+work, so it cannot be a default. Every other option turns inference *off*.
+
+Setting all six inference flags to their non-default values reproduces the 0.1.x id scheme
+exactly:
 
 ```json
 {
   "autoIndex": false,
   "collectionFirstMap": false,
   "nestedIndexes": false,
-  "mapMethods": ["map"]
+  "mapMethods": ["map"],
+  "resolveCallbackRefs": false,
+  "indexCounter": false
 }
 ```
 
@@ -453,10 +462,12 @@ test("user card interactions", async ({ page }) => {
 | `.map(fn, thisArg)`    | ✅        | Still `Array.prototype.map`, so the index is real      |
 | RxJS `map(fn)`         | ✅        | The operator passes `(value, index)`                   |
 | Nested `.map()`        | ✅        | One index per level → `{"Comp.td-" + r + "-" + c}`     |
-| `R.map(fn, items)`     | ⚠️        | Inferred, but ramda passes no index → degrades to a static id, never `-undefined` |
-| `items.map(renderItem)`| ⚠️        | No function literal to read an index from — static id  |
-| `items.map((it, [i]) => …)` | ⚠️   | The index slot is destructured — nothing to reference   |
-| Two instances of a component | ⚠️  | Ids are per component, not per instance — see [Limitations](#ids-are-per-component-not-per-instance) |
+| `R.map(fn, items)`     | ✅        | Ramda passes no index, so a call-site counter supplies one |
+| `items.map(renderItem)`| ✅        | The referenced function is indexed where it is declared |
+| `items.map((it, [i]) => …)` | ✅   | The first identifier the pattern binds is used, guarded  |
+| Two instances of a component | ✅  | With [`instanceIds: true`](#ids-are-per-component-not-per-instance) — off by default, it changes existing ids |
+| `items.map(imported)`  | ⚠️        | The declaration is in another file, out of the plugin's reach — static id |
+| `R.map((it, i) => …)`  | ⚠️        | An index **you** declare is used as written, so a callee that passes none yields `-undefined` |
 
 ---
 
@@ -490,20 +501,61 @@ Nested callbacks contribute one index segment each, so cells stay unique across 
 {rows.map((cells) => <tr>{cells.map((cell) => <td>{cell}</td>)}</tr>)}
 ```
 
-**Where the callee turns out not to pass an index**, the segment drops out and the id is
-the plain static `List.li` — never `List.li-undefined`. That covers curried ramda,
-lodash-fp, `R.map(fn, list)`, and any helper of your own named `map`:
+A callback that is passed **by reference** has no parameter list at the call site, so the
+index is added where the function is declared instead. The declaration may sit anywhere in
+the same file — before the call, after it, or hoisted:
 
 ```jsx
-{R.map((item) => <li/>, items)}                 // → "List.li" on every item
+{items.map(renderItem)}                         // renderItem.li-0, renderItem.li-1, …
+const renderItem = (item) => <li>{item}</li>;   // ← the index lands here
 ```
 
-Only these forms have nothing the plugin can work with at all:
+The function is matched by name, so two same-named functions in one file are both indexed
+if either is used as a callback — harmless, since the segment is guarded. Appending to a
+declaration changes its arity for every caller, not only the map call; `resolveCallbackRefs:
+false` turns the whole behaviour off.
+
+A destructuring pattern in the index slot leaves nothing to append, but it does bind
+something the source pulled out of that argument, and the first such binding is used:
+
+```jsx
+{items.map((item, { index }) => <li/>)}         // List.li-0, List.li-1, …
+```
+
+**Where the callee turns out to pass no index at all** — ramda, lodash-fp, or a helper of
+your own named `map` — the plugin supplies one itself, from a counter bound just outside
+the call:
+
+```jsx
+{R.map((item) => <li/>, items)}                 // List.li-0, List.li-1, …
+// emitted as ((c) => R.map((item, i = c++) => …, items))(0)
+```
+
+The counter is reset every time the call runs, so ids track item positions rather than
+climbing across renders. It is only used where the call has a collection argument after
+the callback: a curried `map(fn)` evaluates once and the function it returns may be stored
+and reused, where a counter would drift. That shape keeps the guarded index, which drops
+out to the plain static `List.li` — never `List.li-undefined`:
+
+```jsx
+{R.map((item) => <li/>)(items)}                 // → "List.li" on every item
+```
+
+These forms still get one static id for every item:
 
 ```jsx
 // ⚠️ every <li> gets the identical id "List.li"
-{items.map(renderItem)}          // no callback body here — renderItem gets its own ids
-{items.map((item, [i]) => <li/>)} // the index slot is destructured: nothing to reference
+{items.map(imported)}             // declared in another file, out of reach
+{items.map((item, []) => <li/>)}  // the pattern binds nothing at all
+```
+
+And one form can still produce `-undefined`, because it is your own assertion rather than
+the plugin's guess — an index **you** declare is used exactly as written, on the callee
+you wrote it for:
+
+```jsx
+{R.map((item, i) => <li/>, items)}              // ⚠️ "List.li-undefined" — ramda passes no i
+{R.map((item) => <li/>, items)}                 // ✅ let the plugin infer it instead
 ```
 
 Duplicate testids are legal HTML but will break `getByTestId`-style queries that expect
@@ -520,8 +572,8 @@ correctly keeps a static id, since the index variable does not exist in that sco
 
 ### Ids are per component, not per instance
 
-The counter resets for each component, so a component rendered more than once repeats its
-ids:
+By default the counter resets for each component, so a component rendered more than once
+repeats its ids:
 
 ```jsx
 <Badge /> <Badge />   // both render <span data-testid="Badge.span">
@@ -536,9 +588,44 @@ the component:
 // the <span> inside Badge → "Badge.span" on both   ⚠️
 ```
 
-This is inherent to assigning ids at compile time from one source node: the plugin cannot
-know how many times a component will be rendered. If you need to tell instances apart,
-pass the id in as a prop and set it explicitly on the element.
+No id assigned at compile time from one source node can tell instances apart — the plugin
+cannot know how many times a component will be rendered. What it *can* do is let each
+instance carry a prefix down to its children at runtime, which is what `instanceIds` does:
+
+```json
+{ "instanceIds": true }
+```
+
+```jsx
+const Badge = ({ label }) => <span>{label}</span>;
+// becomes ({ "data-testid": p, label }) => <span data-testid={(p || "Badge") + ".span"}>
+
+<Toolbar>
+  <Badge /> <Badge />
+</Toolbar>
+// Toolbar.Badge.span  and  Toolbar.Badge2.span    ← distinct
+
+{items.map((item) => <Badge />)}
+// Rows.Badge-0.span, Rows.Badge-1.span, …          ← distinct per item
+```
+
+The prop is the attribute the plugin already injects on the child element (or the first of
+them, if you configured several), so nothing has to be wired up by hand. A component that
+receives no prefix — rendered at the top level, or by code the plugin never saw — falls
+back to its own name and keeps exactly the id it had before.
+
+**This is off by default because it is a breaking change**: every id below the top level
+gains a path prefix, so existing selectors for nested components stop matching. Turn it on
+when you are ready to update them. Three things to know before you do:
+
+- Ids become as deep as the render tree. `Page.Card2.Row-3.Badge.span` is precise but long,
+  and it changes whenever a component is moved to a different parent.
+- A component whose props you destructure gains one property in the pattern. If it also
+  has a rest element, that rest no longer collects `data-testid`, so a `{...rest}` spread
+  onto the root element no longer overwrites the id the plugin put there.
+- Class components read `this.props`. Inside a `function` expression `this` is something
+  else, so elements there keep the plain component-name prefix; use an arrow callback if
+  you want the prefix to reach them.
 
 ### The appended index parameter
 
@@ -581,10 +668,11 @@ edits — adding a map callback earlier in the file renumbers the ones after it.
 snapshot-test transpiled output rather than rendered DOM, expect churn there; snapshots
 of rendered markup only ever see the resulting `data-testid` values.
 
-One side effect to be aware of: appending a parameter changes the callback's
+One side effect to be aware of: appending a plain parameter changes the callback's
 `Function.length`, so a callee that branches on callback arity sees a different value.
 Array methods, lodash and `React.Children.map` do not, but if you pass callbacks to
-something that does, set `autoIndex: false`.
+something that does, set `autoIndex: false`. (The counter form appends a parameter *with
+a default*, which leaves `Function.length` untouched.)
 
 Set `autoIndex: false` to turn appending off entirely and keep static ids for callbacks
 that declare no index.
@@ -617,6 +705,20 @@ Set all four and the ids are exactly 0.1.x's. Each one you leave at its default 
 elements that get unique ids instead of duplicates, so treat them as temporary. To pin an
 individual id permanently, set the attribute explicitly on the element — the plugin never
 overwrites one that is already present.
+
+### Upgrading again: the last three duplicated forms
+
+Three shapes that previously gave every item the same id now get unique ones. If you wrote
+selectors against those duplicated ids, they change:
+
+| Source | Before | Now | Opt-out |
+| ------ | ------ | --- | ------- |
+| `R.map((item) => <li/>, items)` | `List.li` on every item | `List.li-0`, `List.li-1`, … | `indexCounter: false` |
+| `items.map(renderItem)` | `renderItem.li` on every item | `renderItem.li-0`, … | `resolveCallbackRefs: false` |
+| `items.map((item, [i]) => <li/>)` | `List.li` on every item | `List.li-0`, `List.li-1`, … | — |
+
+Ids that were already unique are unchanged, and `instanceIds` is off unless you turn it
+on, so nothing below the top level gains a prefix by upgrading.
 
 ### `manifestDir` is not supported
 

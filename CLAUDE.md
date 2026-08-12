@@ -20,8 +20,14 @@ npm run build                                         # Build WASM and copy to p
 ### Full CI Check
 
 ```bash
-./scripts/check-invariants.sh && cargo test && cargo build --target wasm32-wasip1 --release
+./scripts/check-invariants.sh && cargo test && npm run build && node scripts/verify-runtime.cjs
 ```
+
+`scripts/verify-runtime.cjs` drives the built `plugin.wasm` through a real `@swc/core`
+host and asserts the ids of *rendered* markup, once as emitted and once minified with
+mangling — the three things fixtures cannot do (cross the FFI boundary, minify, run). It
+borrows `@swc/core` and `react-dom` from `example/jest`, so that example has to be
+installed, and it reads `plugin.wasm` by absolute path, so run `npm run build` first.
 
 ## Rules — always check, fix automatically
 
@@ -79,14 +85,21 @@ by that.
 
 12. **Infer an index wherever one plausibly exists; never require configuration to get
     unique ids.** Detection is deliberately broad — any callee named in `mapMethods` with
-    a callback literal in argument 0 or 1 — because the syntax cannot distinguish callees
-    that pass an index from ones that do not (`map(fn)` is both RxJS and curried ramda).
+    a callback in argument 0 or 1 — because the syntax cannot distinguish callees that
+    pass an index from ones that do not (`map(fn)` is both RxJS and curried ramda).
     Narrowing detection guarantees duplicate ids for everything it excludes, while
     guessing wrongly costs nothing once the segment is guarded (rule 14). Prefer an index
-    already in scope over an appended one: declared parameter → rest element (`args[1]`,
-    no signature change) → appended parameter. Options may only ever *remove* inference;
-    a default that has to be switched on is a bug. New shapes need a fixture in
-    `tests/fixture/map-uncertain-callees/` (inferred + guarded) or
+    already in scope over one that has to be introduced: declared parameter → rest element
+    (`args[1]`, no signature change) → identifier bound by a pattern in the index slot →
+    appended parameter (with a counter default where one is available, rule 15). A
+    callback passed by *reference* is indexed at its declaration in the same file, which
+    is why names are collected in a pass before anything is rewritten — the declaration
+    may be hoisted or come later. Options may only ever *remove* inference; a default that
+    has to be switched on is a bug, with exactly one exception: `instanceIds` changes ids
+    that already work, so it must be opted into. New shapes need a fixture in
+    `tests/fixture/map-uncertain-callees/` (inferred + guarded),
+    `tests/fixture/map-index-counter/` (counter-eligible),
+    `tests/fixture/map-callback-refs/` (by reference), or
     `tests/fixture/map-no-inject-cases/` (nothing to work with).
 
 13. **Every generated binding name must be collision-checked against the callback it is
@@ -95,16 +108,36 @@ by that.
     what keeps nested callbacks from generating the same name twice, since scanning an
     inner callback cannot yet see an outer generated name.
 
-14. **Any index the plugin inferred must be emitted guarded; a declared one must not be.**
+14. **Any index the plugin inferred must be emitted guarded unless it is bound by
+    construction; a declared one must not be guarded at all.**
     `{"List.li" + (i === void 0 ? "" : "-" + i)}` degrades to the plain static id when the
     callee turns out not to pass an index. This guard is what licenses the broad detection
     in rule 12 — without it, every widening would risk `List.li-undefined` on every item.
     Guard appended parameters *and* rest-element reads (`args[1]` may not exist). Compare
     with `=== void 0`, never a truthiness or numeric test: index `0` is falsy, and
     `_.map(object, cb)` passes a string key — both verified against real lodash in
-    `example/vitest/src/__tests__/MapHosts.test.jsx`. Indices the source declares stay
-    unguarded: writing `(item, i) =>` asserts the binding, and guarding it would bloat the
-    common output for nothing.
+    `example/vitest/src/__tests__/MapHosts.test.jsx`. Two sources are exempt. Indices the
+    source declares stay unguarded: writing `(item, i) =>` asserts the binding, and
+    guarding it would bloat the common output for nothing. So does an index whose
+    parameter default reads a call-site counter (rule 15) — the default runs precisely
+    when the callee passed nothing, so the binding always holds a number.
+
+15. **The call-site counter may only be used where the call iterates immediately.**
+    `((c) => R.map((item, i = c++) => …, items))(0)` gives a real 0..n-1 index to a callee
+    that passes none. It requires the callback in argument 0 *and* a further argument: a
+    curried `map(fn)` evaluates once and the function it returns may be stored and reused,
+    so the counter would climb past the item positions instead of tracking them. It is
+    also refused when the call contains `await` or `yield` outside a nested function,
+    because the counter binding is introduced by an arrow wrapped around the call and an
+    arrow can do neither. Both exclusions fall back to the guarded appended index.
+
+16. **An instance prefix must never be read from a parameter that is not props.** With
+    `instanceIds`, a component reads the prefix from its first parameter — but a function
+    reached through `items.map(row)` receives the *item* there, so it takes an index and
+    never a prefix. A class reads `this.props`, which is not the instance inside a
+    `function` expression, so the prefix is suppressed there. An appended props parameter
+    carries `= {}`: destructuring `undefined` throws, and a component that declared no
+    parameter can legitimately be called with no argument.
 
 ## Architecture
 
@@ -131,16 +164,29 @@ across every item, so its attribute becomes an expression instead:
   `_.map(items, cb)` → arg 1) for any callee named in `mapMethods`. It does *not* try to
   decide whether that callee passes an index — it cannot (rule 12).
 - `IndexSource` ranks where the index comes from: `Declared` (a named parameter, trusted
-  and unguarded), `RestElement` (`args[1]` / `rest[0]` — no signature change), then
-  `Appended` (`fresh_ident`, rule 13, written back **only if a testid referenced it**, so
-  callbacks without JSX keep their signature). The last two are guarded (rule 14).
-- `declared_index_ident` accepts any second parameter that binds one identifier,
-  unwrapping a default (`(item, index = 0) =>`). A destructuring pattern binds no single
-  identifier to reference, so it falls back to a static id.
+  and unguarded), `RestElement` (`args[1]` / `rest[0]` — no signature change),
+  `Destructured` (the first identifier a pattern in the index slot binds — the slot is
+  occupied so nothing can be appended), then `Appended` / `Counted` (`fresh_ident`,
+  rule 13, written back **only if a testid referenced it**, so callbacks without JSX keep
+  their signature). Everything but `Declared` and `Counted` is guarded (rule 14).
+- `declared_index_ident_from` accepts any second parameter that binds one identifier,
+  unwrapping a default (`(item, index = 0) =>`). A destructuring pattern falls through to
+  `destructured_index_ident_from`, which must be tried *after* `rest_index_source_from`:
+  a rest element at that position holds the argument list, not the index.
 - `map_indices` is a stack: an element inside nested callbacks gets one segment per
   level (`{"Table.td-" + r + "-" + c}`), otherwise the inner index would repeat for
   every outer iteration. The stack is only active while visiting the callback argument,
   never the callee or the other arguments, where the binding does not exist.
+- `counter_call_site` decides whether a `Counted` index is available (rule 15); when one
+  is used, the whole call is replaced by `((seq) => call)(0)` *after* its arguments have
+  been visited, and only if a testid referenced the index.
+- `CallbackRefScan` runs over the program in `visit_mut_program` and collects the names
+  handed to map-like calls by reference. `enter_component_scope` turns a matching
+  declaration into a callback: it puts an index in scope for the body and force-guards it,
+  because a named function can also be called with no index at all.
+- `instance_prefix` holds the prefix in force for the component being visited
+  (`instanceIds` only), and `fn_expr_depth` tracks the function expressions entered since
+  the component started, because `this.props` is unreadable inside one.
 
 ### SWC Plugin (`src/lib.rs`)
 

@@ -1,5 +1,61 @@
 # Changelog
 
+## Unreleased
+
+### The iteration forms that still shared one id now get unique ids
+
+Three shapes were previously documented as producing the same static id for every item.
+None of them needs configuration:
+
+| Source | Before | Now |
+| ------ | ------ | --- |
+| `R.map((item) => <li/>, items)` | `List.li` on every item | `List.li-0`, `List.li-1`, … |
+| `items.map(renderItem)` | `renderItem.li` on every item | `renderItem.li-0`, `renderItem.li-1`, … |
+| `items.map((item, [i]) => <li/>)` | `List.li` on every item | `List.li-0`, `List.li-1`, … |
+
+- **A call-site counter** covers callees that pass no index at all. Where the callback is
+  argument 0 and a collection argument follows it, the appended index parameter takes a
+  default that reads a counter bound just outside the call
+  (`((c) => R.map((item, i = c++) => …, items))(0)`). A default is evaluated per
+  invocation and only when nothing was passed, so the binding always holds a number — and
+  the emitted segment needs no guard. The counter resets each time the call runs. A
+  curried `map(fn)` is excluded: it evaluates once and may be stored, where a counter
+  would drift. Opt out with `indexCounter: false`.
+- **Callbacks passed by reference** are indexed at their declaration. The names handed to
+  map-like calls are collected in a pass of their own first, so the declaration may appear
+  before the call, after it, or hoisted. A declaration in another file is still out of
+  reach. Opt out with `resolveCallbackRefs: false`.
+- **A destructuring pattern in the index slot** contributes the first identifier it binds,
+  guarded like any other inference. `(item, { index }) => …` and `(item, [i]) => …` both
+  work; a pattern that binds nothing still yields a static id.
+
+An index **you** declare is still used exactly as written, so
+`R.map((item, i) => …, items)` — a declared index on a callee that passes none — remains
+the one shape that can produce `List.li-undefined`. Let the plugin infer it instead.
+
+### `instanceIds` — ids per instance rather than per component (opt-in)
+
+A component rendered twice repeated its ids. With `instanceIds: true` each component
+prefixes its ids with the attribute value its parent passed down — the attribute the
+plugin already injects on the child element — so instances become distinct:
+
+```jsx
+<Badge/> <Badge/>            // Toolbar.Badge.span, Toolbar.Badge2.span
+{items.map(() => <Badge/>)}  // Rows.Badge-0.span, Rows.Badge-1.span, …
+```
+
+A component that receives no prefix falls back to its own name and keeps exactly the id it
+had before. **Off by default**: it adds a path prefix to every id below the top level, so
+existing selectors for nested components must be updated before turning it on.
+
+### Also
+
+- `scripts/verify-runtime.cjs` runs the built `plugin.wasm` through a real SWC host and
+  asserts the ids of *rendered* markup, once as emitted and once minified with mangling —
+  the two things fixtures cannot check.
+- The readme's claim that an id can never be `-undefined` was overstated; it holds for
+  every index the plugin infers, not for one the source declares.
+
 ## 0.2.0
 
 ### Unique ids for every iteration form

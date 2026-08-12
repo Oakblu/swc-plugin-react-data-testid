@@ -1,6 +1,7 @@
 // Every opt-out set at once: autoIndex false, collectionFirstMap false, nestedIndexes
-// false, mapMethods narrowed to ["map"]. This is the 0.1.x id scheme, for a codebase
-// migrating in stages. Nothing here is needed for correctness — the defaults are.
+// false, mapMethods narrowed to ["map"], resolveCallbackRefs false, indexCounter false.
+// This is the 0.1.x id scheme, for a codebase migrating in stages. Nothing here is
+// needed for correctness — the defaults are.
 // No index declared: no parameter is appended, so one static id for every item.
 const List = ({ items }: {
     items: string[];
@@ -30,3 +31,13 @@ const Table = ({ rows }: {
         </tr>)}
     </tbody>
   </table>;
+// No counter is wrapped around a call whose callee may pass no index.
+const Ramda = ({ items }: {
+    items: string[];
+})=><ul data-testid="Ramda.ul">{R.map((item)=><li data-testid="Ramda.li">{item}</li>, items)}</ul>;
+// A function referenced as a callback is not looked up, so its JSX keeps a static id and
+// its signature is untouched.
+const ByReference = ({ items }: {
+    items: string[];
+})=><ul data-testid="ByReference.ul">{items.map(renderItem)}</ul>;
+const renderItem = (item: string)=><li data-testid="renderItem.li">{item}</li>;

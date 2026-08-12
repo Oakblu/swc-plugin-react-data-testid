@@ -2,6 +2,7 @@
 plugin.wasm
 example/nextjs-swc/.next
 example/nextjs-swc/node_modules
+.swc
 example/vite/.swc
 example/vite/dist
 example/vite/node_modules

@@ -35,6 +35,21 @@
       "description": "Give an element inside nested map callbacks one id segment per level (\"Table.td-\" + r + \"-\" + c). Turning this off restores the pre-0.2.0 innermost-only id, which collides across outer iterations; it exists only for staged migration.",
       "default": true
     },
+    "resolveCallbackRefs": {
+      "type": "boolean",
+      "description": "Index a function that is only *referenced* as a map callback (`items.map(renderItem)`) by looking up its declaration in the same file, so its JSX gets one id per item instead of one shared id. The segment is guarded, including where that function declares the index itself — a named function can also be called from somewhere that passes none. A declaration in another file is out of reach.",
+      "default": true
+    },
+    "indexCounter": {
+      "type": "boolean",
+      "description": "Where the callee passes no index at all (`R.map(fn, items)`), supply one from a counter bound just outside the call: the appended parameter takes a default that reads it, so the binding always holds a number. Only applied where the call has a collection argument after the callback — a curried `map(fn)` may be stored and reused, where a counter would drift instead of tracking item positions.",
+      "default": true
+    },
+    "instanceIds": {
+      "type": "boolean",
+      "description": "Prefix every id in a component with the attribute value its parent passed down, so two instances of one component no longer repeat ids: `Toolbar.Badge.span` and `Toolbar.Badge2.span` rather than `Badge.span` twice. A component that receives no prefix falls back to its own name. OFF by default, and the only option that is: it changes every id below the top level, so existing selectors for nested components stop matching.",
+      "default": false
+    },
     "manifestDir": {
       "type": "string",
       "description": "NOT SUPPORTED — setting this fails the build with an explanatory error. SWC runs Wasm plugins in a WASI sandbox with no preopened directories, so the plugin cannot write to disk. Remove the option to unblock your build.",
