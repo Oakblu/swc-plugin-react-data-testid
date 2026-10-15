@@ -14,6 +14,12 @@
 // It borrows @swc/core and react-dom from example/jest, so that example must be
 // installed, and loads ../plugin.wasm by absolute path — so run `npm run build` first,
 // or it will silently verify the previous binary.
+//
+// example/jest pins @swc/core exactly, and that pin is what decides WHICH host ABI this
+// script proves. The plugin's swc_ecma_ast major has to match the host's in both
+// directions, so that pin must move with Cargo.toml's swc_core pin or this check passes
+// against a host nobody uses. The SOURCE below is deliberately substantial: a mismatched
+// pair can still transform a one-element component cleanly, and only fails on real input.
 const path = require("path");
 const assert = require("assert");
 const { createRequire } = require("module");

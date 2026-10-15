@@ -378,7 +378,12 @@ Guidance that avoids the common failure modes:
 
 ## Compatibility
 
-Built against `swc_core 76.x`, verified with `@swc/core 1.15.47`. Wasm plugins built with
-`swc_core >= 47` are ABI-compatible with `@swc/core >= 1.15.0`, though partially — a
-future SWC release may still require a new plugin version. Check
-[plugins.swc.rs](https://plugins.swc.rs/) before pinning. Node >= 18.
+Built against `swc_core 79.x` (`swc_ecma_ast 29.0.1`). The plugin's `swc_ecma_ast` major must
+match the host's, **in both directions**: `0.4.0`+ needs Next.js >= 16.4.0 or `@swc/core`
+>= 1.16.0; `0.3.0` and earlier need Next.js <= 16.3.8 or `@swc/core` 1.15.x, and fail on the
+newer hosts. A mismatch fails the build with `Failed to deserialize program received from
+host`, because the major changes the CBOR AST wire format. A trivial file can still transform
+cleanly under a mismatched pair, so a one-element smoke test proves nothing. `cargo test`
+cannot catch this either — it never crosses the FFI boundary. Always run
+`node scripts/verify-runtime.cjs`, which transforms substantial source.
+Check [plugins.swc.rs](https://plugins.swc.rs/) before pinning. Node >= 18.

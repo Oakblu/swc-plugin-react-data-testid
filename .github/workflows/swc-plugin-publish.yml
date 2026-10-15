@@ -86,6 +86,15 @@ jobs:
           node-version: "22.16.0"
           registry-url: "https://registry.npmjs.org"
 
+      # `prepublishOnly` ends in `node scripts/verify-runtime.cjs`, which borrows
+      # @swc/core and react-dom from example/jest and exits 2 if that example is not
+      # installed. Install it here or every publish below fails.
+      - name: 📦 Install Verification Host
+        run: |
+          corepack enable
+          corepack prepare pnpm@11.1.2 --activate
+          pnpm install --dir example/jest --frozen-lockfile
+
       - name: 🔍 Get Current Version
         id: current_version
         run: |
@@ -104,6 +113,14 @@ jobs:
 
           # Remove 'v' prefix that npm version adds
           NEW_VERSION=${NEW_VERSION#v}
+
+          # Keep Cargo.toml (and Cargo.lock, which records it) in lockstep, the way
+          # scripts/release.sh does — invariant 1 in CLAUDE.md. Only the first
+          # `version =` line is the package version; dependency pins come later.
+          awk -v v="$NEW_VERSION" '!d && /^version = / { sub(/"[^"]*"/, "\"" v "\""); d=1 } { print }' \
+            Cargo.toml > Cargo.toml.tmp && mv Cargo.toml.tmp Cargo.toml
+          cargo update -p swc_plugin_react_data_testid --offline \
+            || cargo update -p swc_plugin_react_data_testid
 
           echo "new=$NEW_VERSION" >> $GITHUB_OUTPUT
           echo "🚀 New version: $NEW_VERSION"
@@ -169,7 +186,7 @@ jobs:
             This PR was automatically created after publishing SWC plugin v${{ steps.version_bump.outputs.new }}.
 
             **Changes:**
-            - Updated `package.json` version: ${{ steps.current_version.outputs.current }} → ${{ steps.version_bump.outputs.new }}
+            - Updated `package.json` and `Cargo.toml` version: ${{ steps.current_version.outputs.current }} → ${{ steps.version_bump.outputs.new }}
 
             **Already Published:**
             - ✅ NPM: `swc-plugin-react-data-testid@${{ steps.version_bump.outputs.new }}`
@@ -183,7 +200,10 @@ jobs:
           branch: version-bump/swc-v${{ steps.version_bump.outputs.new }}
           delete-branch: true
           include-untracked: false
-          add-paths: package.json
+          add-paths: |
+            package.json
+            Cargo.toml
+            Cargo.lock
 
       - name: 🎉 Create GitHub Release
         if: ${{ !inputs.dry_run }}

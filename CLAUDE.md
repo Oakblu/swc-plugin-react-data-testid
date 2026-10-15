@@ -192,7 +192,7 @@ across every item, so its attribute becomes an expression instead:
 
 Rust implementation using SWC's `VisitMut` trait, compiled to WASM via `wasm32-wasip1`. Exposes a `#[plugin_transform]` entry point. Configuration deserialized from JSON via `TransformPluginProgramMetadata`.
 
-**SWC version pinning is critical**: SWC plugins must be compiled against an `swc_core` version compatible with the consumer's SWC (Next.js, @vitejs/plugin-react-swc, @swc/jest, etc.). The current pins in `Cargo.toml` target `swc_core 76.x` / `@swc/core 1.15.x`. Plugins built with `swc_core >= 47` are ABI-compatible with `@swc/core >= 1.15.0`, but only partially — field removals and type changes can still break it. Changing `swc_core`, `swc_ecma_ast`, or `swc_plugin_proxy` versions requires coordinating with downstream consumers.
+**SWC version pinning is critical**: the plugin's `swc_ecma_ast` major must match the one the consumer's SWC uses (Next.js, @vitejs/plugin-react-swc, @swc/jest, etc.). The current pins in `Cargo.toml` target `swc_core 79.x` / `swc_ecma_ast 29.0.1` — Next.js >= 16.4.0 or `@swc/core` >= 1.16.0. `0.3.0` and earlier (`swc_core 76` / `swc_ecma_ast 28`) serve Next.js <= 16.3.8 / `@swc/core` 1.15.x. There is **no** ABI compatibility to lean on in *either* direction: the major sets the CBOR AST wire format, so an ast-28 plugin fails on an ast-29 host exactly as the reverse, with `Failed to deserialize program received from host`. A trivial file can still transform cleanly under a mismatched pair — verified — so a one-element smoke test proves nothing; only substantial source does. Changing `swc_core`, `swc_ecma_ast`, or `swc_plugin_proxy` versions requires coordinating with downstream consumers, and updating the version table in `readme.md` and `CHANGELOG.md`.
 
 `swc_ecma_ast` and `swc_plugin_proxy` are pinned with `=` and must match the versions `swc_core` links against. A mismatch fails the WASM link with undefined host symbols (`__set_transform_result`, `__get_transform_context`). **`cargo test` does not catch this** — native tests never cross the plugin FFI boundary, so always run the WASM build too.
 
@@ -209,5 +209,5 @@ Fixture suites:
 
 ### Examples
 
-- `example/nextjs-swc/` — Next.js 16 with SWC plugin via `next.config.js` `experimental.swcPlugins`
+- `example/nextjs-swc/` — Next.js 16.4 with SWC plugin via `next.config.js` `experimental.swcPlugins`. Next bundles its own SWC, so the host ABI is pinned by the `next` version here; the other examples float on `@swc/core` and need `pnpm update @swc/core --depth Infinity` to follow a pin change
 - `example/jest/` — Jest with `@swc/jest` transformer; run `pnpm test` to verify the plugin injects testids at build time

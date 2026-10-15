@@ -680,7 +680,7 @@ impl ReactDataTestIdTransform {
             span: DUMMY_SP,
             ctxt: SyntaxContext::default(),
             params: vec![Self::binding_pat(counter)],
-            body: Box::new(BlockStmtOrExpr::Expr(Box::new(Expr::Call(call)))),
+            body: Box::new(ArrowFunctionBody::Expr(Box::new(Expr::Call(call)))),
             is_async: false,
             is_generator: false,
             type_params: None,
@@ -2070,7 +2070,7 @@ mod tests {
             span: DUMMY_SP,
             ctxt: Default::default(),
             params,
-            body: Box::new(BlockStmtOrExpr::Expr(Box::new(Expr::Lit(Lit::Null(Null {
+            body: Box::new(ArrowFunctionBody::Expr(Box::new(Expr::Lit(Lit::Null(Null {
                 span: DUMMY_SP,
             }))))),
             is_async: false,
@@ -2490,7 +2490,7 @@ mod tests {
         let mut cb = arrow(vec![param("item")]);
         if let Expr::Arrow(arrow) = cb.as_mut() {
             arrow.is_async = true;
-            arrow.body = Box::new(BlockStmtOrExpr::Expr(Box::new(Expr::Await(AwaitExpr {
+            arrow.body = Box::new(ArrowFunctionBody::Expr(Box::new(Expr::Await(AwaitExpr {
                 span: DUMMY_SP,
                 arg: ident_expr("item"),
             }))));

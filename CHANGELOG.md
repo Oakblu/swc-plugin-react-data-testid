@@ -1,5 +1,45 @@
 # Changelog
 
+## 0.4.0
+
+### Rebuilt for the `swc_ecma_ast 29` host ABI
+
+`0.3.0` was built against `swc_core 76` / `swc_ecma_ast 28`. Next.js ≥ 16.4.0 and
+`@swc/core` ≥ 1.16.0 moved to `swc_ecma_ast 29`, which changes the CBOR AST wire format, and
+they reject the old binary with `Failed to deserialize program received from host`. This
+build targets `swc_core 79` / `swc_ecma_ast 29.0.1`.
+
+|                  | Next.js   | `@swc/core` |
+| ---------------- | --------- | ----------- |
+| `0.4.0` requires | ≥ 16.4.0  | ≥ 1.16.0    |
+| `0.3.0` requires | ≤ 16.3.8  | 1.15.x      |
+
+**The match is required in both directions.** Verified for this release: Next.js 16.4.0 and
+`@swc/core` 1.16.18 accept `0.4.0` and reject `0.3.0`; Next.js 16.3.0, 16.3.8 and
+`@swc/core` 1.15.47 accept `0.3.0` and reject `0.4.0`. So upgrading the bundler past those
+lines means upgrading this plugin with it — and staying below them means staying on `0.3.0`,
+which is not deprecated.
+
+A trivial file can still transform cleanly under a mismatched pair, so a one-element smoke
+test does not prove a pair works; the failure shows up on real input.
+
+If you reach SWC through `@vitejs/plugin-react-swc`, `@swc/jest` or another wrapper, note
+that those depend on `@swc/core` by range, so an existing lockfile can keep resolving
+1.15.x and fail even after you upgrade this plugin. Force the transitive bump:
+
+```bash
+pnpm update @swc/core --depth Infinity   # npm/yarn: delete the lockfile entry and reinstall
+```
+
+No behavioural change — ids, options and output are identical. 176 fixtures unchanged.
+
+### `scripts/verify-runtime.cjs` now gates every publish
+
+`cargo test` passes natively without ever crossing the plugin FFI boundary, and `cargo build`
+proves only that the wasm compiles. Both were green for a `plugin.wasm` no current host could
+load. The runtime check now runs from `prepublishOnly`, so it covers `release.sh` and both
+workflows, and as its own CI job on pull requests.
+
 ## 0.3.0
 
 ### The iteration forms that still shared one id now get unique ids

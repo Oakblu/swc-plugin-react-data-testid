@@ -177,9 +177,21 @@ import "@testing-library/jest-dom/vitest";
 
 ### SWC Version Compatibility
 
-SWC plugins are compiled against a specific `swc_core` version, which must be compatible with the SWC your bundler uses. This plugin targets `swc_core 76.x`, verified against `@swc/core 1.15.47`.
+SWC plugins are compiled against a specific `swc_core`, and the plugin's `swc_ecma_ast` major must match the one your bundler's SWC uses. Pick the row matching your bundler — **the match is required in both directions**, so an older plugin on a newer bundler fails exactly like a newer plugin on an older bundler.
 
-Starting with `@swc/core 1.15.0`, WASM plugins built with `swc_core >= 47` are ABI-compatible across `@swc/core` versions — so this build works with current Next.js, Vite (`@vitejs/plugin-react-swc`), and `@swc/jest`. That compatibility is partial rather than absolute, so a future SWC release may still require a new plugin version.
+| Plugin version      | `swc_core` | `swc_ecma_ast` | Use with                                 |
+| ------------------- | ---------- | -------------- | ---------------------------------------- |
+| `0.4.0` and later   | 79         | 29             | Next.js ≥ 16.4.0, `@swc/core` ≥ 1.16.0   |
+| `0.3.0` and earlier | 76         | 28             | Next.js ≤ 16.3.8, `@swc/core` 1.15.x     |
+
+A mismatched pair fails the build with:
+
+```
+Failed to execute SWC plugin
+  1: Failed to deserialize program received from host
+```
+
+The `swc_ecma_ast` major changes the CBOR AST wire format, so this is not a per-node degradation you can work around — and a trivial file can still slip through, which means a smoke test on a one-element component does not prove the pair works. Verified for this release: Next.js 16.4.0 and `@swc/core` 1.16.18 accept `0.4.0` and reject `0.3.0`; Next.js 16.3.0, 16.3.8 and `@swc/core` 1.15.47 accept `0.3.0` and reject `0.4.0`.
 
 Check compatibility before pinning a version: [plugins.swc.rs](https://plugins.swc.rs/)
 

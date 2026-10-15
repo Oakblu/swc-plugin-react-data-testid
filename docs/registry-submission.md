@@ -30,8 +30,8 @@ their toolchain at all.
 | -------------------- | ------------------------------------------------------------ |
 | npm package          | `swc-plugin-react-data-testid`                                |
 | Repository           | https://github.com/Oakblu/plugin-react-data-testid-generator  |
-| `swc_core`           | 76.x (see `Cargo.toml`; `Cargo.lock` is committed)            |
-| Verified against     | `@swc/core` 1.15.47                                           |
+| `swc_core`           | 79.x (see `Cargo.toml`; `Cargo.lock` is committed)            |
+| Verified against     | `@swc/core` 1.16.18, Next.js 16.4.0                           |
 | Wasm target          | `wasm32-wasip1`                                               |
 | Built artifact       | `plugin.wasm` (npm `main`)                                    |
 

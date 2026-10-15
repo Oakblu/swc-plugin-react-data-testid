@@ -13,28 +13,33 @@ crate-type = ["cdylib", "rlib"]
 
 # ⚠️  VERSION PINNING: swc_core version must match the SWC version used by the
 # consumer (Next.js, @vitejs/plugin-react-swc, @swc/jest, etc.).
-# Current pins target swc_core 76.x / @swc/core 1.15.x (swc_ecma_ast 28.0.0).
-# Plugins built with swc_core >= 47 are ABI-compatible with @swc/core >= 1.15.0
-# (CBOR AST serialization; unknown node types degrade to `Unknown` rather than
-# failing to deserialize). That compatibility is partial, not absolute — field
-# removals and type changes can still break it, so verify against a real host.
+# Current pins target swc_core 79.x (swc_ecma_ast 29.0.1), the AST ABI of
+# Next.js >= 16.4.0 and @swc/core >= 1.16.x (swc_plugin_runner 34.0.0).
+# There is no forward/backward ABI compatibility to lean on, in EITHER direction: the
+# swc_ecma_ast MAJOR sets the CBOR AST wire format, so an ast-28 plugin fails on an
+# ast-29 host exactly as an ast-29 plugin fails on an ast-28 host. A trivial file can
+# still transform cleanly under a mismatched pair, so always verify against a real host
+# with substantial source (scripts/verify-runtime.cjs).
 #
 # swc_ecma_ast / swc_plugin_proxy must match the versions swc_core links against,
 # or the wasm build fails with undefined host symbols (__set_transform_result,
 # __get_transform_context). `cargo test` does NOT catch this — native tests never
 # cross the plugin FFI boundary. Always run `cargo build --target wasm32-wasip1`.
 #
-# Verified against @swc/core 1.15.47 via example/jest and example/vitest.
+# Verified against @swc/core 1.16.18 (swc_plugin_runner 34.0.0) and Next.js 16.4.0.
+# Next.js 16.3.0, 16.3.8 and @swc/core 1.15.47 CANNOT load this build and fail with
+# "Failed to deserialize program received from host"; they take 0.3.0 (swc_ecma_ast 28)
+# instead, which in turn fails on Next.js 16.4.0 and @swc/core 1.16.18.
 # Check compatibility at https://plugins.swc.rs/ before publishing.
 [dependencies]
-swc_core = { version = "76", features = ["ecma_plugin_transform"] }
-swc_ecma_ast = "=28.0.0"
-swc_plugin_proxy = "=29.0.0"
+swc_core = { version = "79", features = ["ecma_plugin_transform"] }
+swc_ecma_ast = "=29.0.1"
+swc_plugin_proxy = "=30.0.0"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
 [dev-dependencies]
-swc_core = { version = "76", features = [
+swc_core = { version = "79", features = [
     "swc_ecma_transforms_testing",
     "ecma_parser",
     "testing",
